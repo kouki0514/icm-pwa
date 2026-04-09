@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { calculateICM } from './lib/icm'
+import PushCallTab from './components/PushCallTab'
 
 interface Player { id: number; name: string; stack: number }
 interface Result { player: Player; equity: number; chipPct: number; rank: number }
@@ -19,7 +20,7 @@ export default function App() {
   const [prizes, setPrizes] = useState<number[]>(DEFAULT_PRIZES)
   const [results, setResults] = useState<Result[] | null>(null)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'calc' | 'bubble'>('calc')
+  const [tab, setTab] = useState<'calc' | 'bubble' | 'pushcall'>('calc')
   const [heroIdx, setHeroIdx] = useState(0)
   const [villainIdx, setVillainIdx] = useState(1)
   const [bubbleResult, setBubbleResult] = useState<{ bf: number; gain: number; loss: number } | null>(null)
@@ -64,9 +65,6 @@ export default function App() {
     const equityWin = calculateICM(winStacks, validPrizes.slice(0, winStacks.length))
     const winAdjIdx = heroIdx < villainIdx ? heroIdx : heroIdx - 1
     const heroWin = equityWin[winAdjIdx] ?? 0
-    const loseStacks = [...stacks]
-    loseStacks[villainIdx] = heroStack + villainStack
-    loseStacks.splice(heroIdx, 1)
     const gain = heroWin - baseEquity[heroIdx]
     const loss = baseEquity[heroIdx]
     const bf = gain > 0 ? loss / gain : Infinity
@@ -74,6 +72,12 @@ export default function App() {
   }, [heroIdx, villainIdx, players, prizes])
 
   const maxEquity = results ? Math.max(...results.map(r => r.equity)) : 1
+
+  const TABS = [
+    { key: 'calc', label: 'ICM計算' },
+    { key: 'bubble', label: 'バブルファクター' },
+    { key: 'pushcall', label: 'Push/Call分析' },
+  ] as const
 
   return (
     <div className="min-h-full bg-surface-900 text-slate-200">
@@ -87,11 +91,11 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex border-b border-surface-600 bg-surface-800">
-        {(['calc', 'bubble'] as const).map(t => (
-          <button key={t} onClick={() => setTab(t)}
-            className={`px-5 py-2.5 font-mono text-sm border-b-2 transition-colors ${tab === t ? 'border-gold-400 text-gold-400' : 'border-transparent text-slate-500 hover:text-slate-300'}`}>
-            {t === 'calc' ? 'ICM計算' : 'バブルファクター'}
+      <div className="flex border-b border-surface-600 bg-surface-800 overflow-x-auto">
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setTab(t.key)}
+            className={`px-4 py-2.5 font-mono text-sm border-b-2 whitespace-nowrap transition-colors ${tab===t.key?'border-gold-400 text-gold-400':'border-transparent text-slate-500 hover:text-slate-300'}`}>
+            {t.label}
           </button>
         ))}
       </div>
@@ -107,10 +111,10 @@ export default function App() {
               <div className="space-y-2">
                 {prizes.map((p, i) => (
                   <div key={i} className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-slate-500 w-8 text-right">{i + 1}位</span>
+                    <span className="font-mono text-xs text-slate-500 w-8 text-right">{i+1}位</span>
                     <span className="text-slate-500 text-sm">¥</span>
-                    <input type="number" className="input-base" value={p} min={0} step={1000} onChange={e => updatePrize(i, +e.target.value)} />
-                    {prizes.length > 1 && <button onClick={() => removePrize(i)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
+                    <input type="number" className="input-base" value={p} min={0} step={1000} onChange={e=>updatePrize(i,+e.target.value)} />
+                    {prizes.length>1 && <button onClick={()=>removePrize(i)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
                   </div>
                 ))}
               </div>
@@ -125,10 +129,10 @@ export default function App() {
               <div className="space-y-2">
                 {players.map(p => (
                   <div key={p.id} className="flex items-center gap-2">
-                    <input type="text" className="input-base" style={{width:'110px',flexShrink:0}} value={p.name} onChange={e => updatePlayer(p.id, 'name', e.target.value)} placeholder="名前" />
-                    <input type="number" className="input-base" value={p.stack} min={0} step={500} onChange={e => updatePlayer(p.id, 'stack', +e.target.value)} />
-                    <span className="font-mono text-xs text-slate-600 w-12 text-right flex-shrink-0">{totalChips > 0 ? ((p.stack / totalChips) * 100).toFixed(1) : '0.0'}%</span>
-                    {players.length > 2 && <button onClick={() => removePlayer(p.id)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
+                    <input type="text" className="input-base" style={{width:'110px',flexShrink:0}} value={p.name} onChange={e=>updatePlayer(p.id,'name',e.target.value)} placeholder="名前" />
+                    <input type="number" className="input-base" value={p.stack} min={0} step={500} onChange={e=>updatePlayer(p.id,'stack',+e.target.value)} />
+                    <span className="font-mono text-xs text-slate-600 w-12 text-right flex-shrink-0">{totalChips>0?((p.stack/totalChips)*100).toFixed(1):'0.0'}%</span>
+                    {players.length>2 && <button onClick={()=>removePlayer(p.id)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
                   </div>
                 ))}
               </div>
@@ -142,14 +146,14 @@ export default function App() {
               <div className="card space-y-1">
                 <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">結果</h2>
                 <div className="grid grid-cols-3 gap-2 mb-4">
-                  {[{label:'参加人数',value:`${players.length}人`},{label:'賞金総額',value:`¥${totalPrize.toLocaleString()}`},{label:'入賞ライン',value:`${prizes.filter(p=>p>0).length}位まで`}].map(m => (
+                  {[{label:'参加人数',value:`${players.length}人`},{label:'賞金総額',value:`¥${totalPrize.toLocaleString()}`},{label:'入賞ライン',value:`${prizes.filter(p=>p>0).length}位まで`}].map(m=>(
                     <div key={m.label} className="bg-surface-800 rounded-lg p-3">
                       <div className="font-mono text-xs text-slate-500 mb-1">{m.label}</div>
                       <div className="font-mono text-sm font-semibold text-slate-100">{m.value}</div>
                     </div>
                   ))}
                 </div>
-                {results.map(r => (
+                {results.map(r=>(
                   <div key={r.player.id} className="py-2 border-b border-surface-600 last:border-0">
                     <div className="flex items-center gap-3 mb-1.5">
                       <span className="font-mono text-xs text-slate-600 w-4">{r.rank}</span>
@@ -179,14 +183,14 @@ export default function App() {
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
                   <label className="font-mono text-xs text-slate-500 w-20">Hero</label>
-                  <select className="input-base" value={heroIdx} onChange={e => setHeroIdx(+e.target.value)}>
-                    {players.map((p, i) => <option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
+                  <select className="input-base" value={heroIdx} onChange={e=>setHeroIdx(+e.target.value)}>
+                    {players.map((p,i)=><option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
                   </select>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="font-mono text-xs text-slate-500 w-20">Villain</label>
-                  <select className="input-base" value={villainIdx} onChange={e => setVillainIdx(+e.target.value)}>
-                    {players.map((p, i) => <option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
+                  <select className="input-base" value={villainIdx} onChange={e=>setVillainIdx(+e.target.value)}>
+                    {players.map((p,i)=><option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
                   </select>
                 </div>
               </div>
@@ -198,7 +202,7 @@ export default function App() {
                 <div className="grid grid-cols-3 gap-2">
                   <div className="bg-surface-800 rounded-lg p-3">
                     <div className="font-mono text-xs text-slate-500 mb-1">バブルファクター</div>
-                    <div className={`font-mono text-xl font-semibold ${bubbleResult.bf > 2 ? 'text-red-400' : bubbleResult.bf > 1.3 ? 'text-amber-400' : 'text-green-400'}`}>{bubbleResult.bf.toFixed(2)}</div>
+                    <div className={`font-mono text-xl font-semibold ${bubbleResult.bf>2?'text-red-400':bubbleResult.bf>1.3?'text-amber-400':'text-green-400'}`}>{bubbleResult.bf.toFixed(2)}</div>
                   </div>
                   <div className="bg-surface-800 rounded-lg p-3">
                     <div className="font-mono text-xs text-slate-500 mb-1">勝ち時の利得</div>
@@ -210,13 +214,18 @@ export default function App() {
                   </div>
                 </div>
                 <div className="mt-3 p-3 bg-surface-800 rounded-lg">
-                  <p className="font-mono text-xs text-slate-400">{bubbleResult.bf > 2 ? '⚠ BF が高い。コールには非常に強いハンドが必要。' : bubbleResult.bf > 1.3 ? '注意: チップEVよりも ICM プレッシャーが大きい。' : '✓ ICM プレッシャーは比較的低い。チップEVを重視できる。'}</p>
+                  <p className="font-mono text-xs text-slate-400">{bubbleResult.bf>2?'⚠ BF が高い。コールには非常に強いハンドが必要。':bubbleResult.bf>1.3?'注意: チップEVよりも ICM プレッシャーが大きい。':'✓ ICM プレッシャーは比較的低い。チップEVを重視できる。'}</p>
                 </div>
               </div>
             )}
           </>
         )}
-        <div className="text-center"><p className="font-mono text-xs text-slate-600">Malmuth-Harville ICMモデル · 9人以下は厳密計算</p></div>
+
+        {tab === 'pushcall' && (
+          <PushCallTab players={players} prizes={prizes} />
+        )}
+
+        <div className="text-center"><p className="font-mono text-xs text-slate-600">Malmuth-Harville ICMモデル · Monte Carlo equity · 9人以下は厳密計算</p></div>
       </div>
     </div>
   )
