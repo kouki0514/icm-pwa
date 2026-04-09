@@ -56,7 +56,7 @@ export function topXPercent(x: number): string[] {
 
 export interface PushCallResult {
   hand: string
-  pushEV: number
+  pushEV: number   // 正規化済み: 総賞金に対する差分比率
   callEV: number
   shouldPush: boolean
   shouldCall: boolean
@@ -73,12 +73,16 @@ export async function calcPushEV(
 ): Promise<PushCallResult[]> {
   const results: PushCallResult[] = []
   const validPrizes = [...prizes].sort((a, b) => b - a)
-  const baseEquity = calculateICM(stacks, validPrizes)[heroIdx]
+  const totalPrize = validPrizes.reduce((a, b) => a + b, 0)
+  if (totalPrize === 0) return []
+
+  const icmBase = calculateICM(stacks, validPrizes)
+  const baseEquity = icmBase[heroIdx]  // 賞金額（例: 150000円）
+
   const heroStack = stacks[heroIdx]
   const villainStack = stacks[villainIdx]
-
-  // effective stack = min(hero, villain) — villain may not cover hero
   const effectiveStack = Math.min(heroStack, villainStack)
+  const bb = Math.max(Math.round((heroStack + villainStack) / 100), 100)
 
   for (let hi = 0; hi < ALL_HANDS.length; hi++) {
     const h = ALL_HANDS[hi]
@@ -92,69 +96,57 @@ export async function calcPushEV(
       ? monteCarloEquity(r1, r2, s1, s2, villainRange, [], 400)
       : 0.5
 
-    // --- Push EV ---
-    // villain folds: hero wins BB (approximated as 1BB = effectiveStack/50)
-    const bb = Math.round((heroStack + villainStack) / 100) || 100
+    // ---- 共通ヘルパー: ICMエクイティ取得 ----
+    const getHeroICM = (newStacks: number[]): number => {
+      const filtered = newStacks.map((s, i) => ({ s, i })).filter(x => x.s > 0)
+      const arr = filtered.map(x => x.s)
+      const prz = validPrizes.slice(0, arr.length)
+      const eq2 = calculateICM(arr, prz)
+      const idx = filtered.findIndex(x => x.i === heroIdx)
+      return idx >= 0 ? eq2[idx] : 0
+    }
+
+    // ---- Push EV ----
+    // villain folds
     const foldStacksPush = [...stacks]
     foldStacksPush[heroIdx] = heroStack + bb
-    foldStacksPush[villainIdx] = villainStack - bb
-    const evFoldPush = calculateICM(foldStacksPush, validPrizes)[heroIdx]
+    foldStacksPush[villainIdx] = Math.max(0, villainStack - bb)
+    const evFoldPush = getHeroICM(foldStacksPush)
 
-    // villain calls and hero wins
+    // villain calls & hero wins
     const winStacksPush = [...stacks]
     winStacksPush[heroIdx] = heroStack + effectiveStack
     winStacksPush[villainIdx] = villainStack - effectiveStack
-    // remove busted players
-    const winStacksFiltered = winStacksPush.map((s, i) => ({ s, i })).filter(x => x.s > 0)
-    const winStacksArr = winStacksFiltered.map(x => x.s)
-    const winPrizes = validPrizes.slice(0, winStacksArr.length)
-    const winEquities = calculateICM(winStacksArr, winPrizes)
-    const heroWinIdxPush = winStacksFiltered.findIndex(x => x.i === heroIdx)
-    const evWinPush = heroWinIdxPush >= 0 ? winEquities[heroWinIdxPush] : 0
+    const evWinPush = getHeroICM(winStacksPush)
 
-    // villain calls and hero loses
+    // villain calls & hero loses
     const loseStacksPush = [...stacks]
-    loseStacksPush[villainIdx] = villainStack + effectiveStack
     loseStacksPush[heroIdx] = heroStack - effectiveStack
-    const loseStacksFiltered = loseStacksPush.map((s, i) => ({ s, i })).filter(x => x.s > 0)
-    const loseStacksArr = loseStacksFiltered.map(x => x.s)
-    const losePrizes = validPrizes.slice(0, loseStacksArr.length)
-    const loseEquities = calculateICM(loseStacksArr, losePrizes)
-    const heroLoseIdxPush = loseStacksFiltered.findIndex(x => x.i === heroIdx)
-    const evLosePush = heroLoseIdxPush >= 0 ? loseEquities[heroLoseIdxPush] : 0
+    loseStacksPush[villainIdx] = villainStack + effectiveStack
+    const evLosePush = getHeroICM(loseStacksPush)
 
-    const callFreq = Math.min(villainRange.length / 100, 0.9)
-    const pushEV = callFreq * (eq * evWinPush + (1 - eq) * evLosePush)
-      + (1 - callFreq) * evFoldPush
-      - baseEquity
+    // callFreq: villainRange / 169ハンド比率（簡易）
+    const callFreq = Math.min(combosInRange(villainRange) / 1326, 1)
+    const evPush = callFreq * (eq * evWinPush + (1 - eq) * evLosePush)
+                 + (1 - callFreq) * evFoldPush
+    const pushEV = (evPush - baseEquity) / totalPrize  // 正規化
 
-    // --- Call EV (hero faces villain push) ---
-    // hero calls and wins
+    // ---- Call EV ----
+    // hero calls & wins
     const winStacksCall = [...stacks]
     winStacksCall[heroIdx] = heroStack + effectiveStack
     winStacksCall[villainIdx] = villainStack - effectiveStack
-    const winCallFiltered = winStacksCall.map((s, i) => ({ s, i })).filter(x => x.s > 0)
-    const winCallArr = winCallFiltered.map(x => x.s)
-    const winCallPrizes = validPrizes.slice(0, winCallArr.length)
-    const winCallEquities = calculateICM(winCallArr, winCallPrizes)
-    const heroWinIdxCall = winCallFiltered.findIndex(x => x.i === heroIdx)
-    const evWinCall = heroWinIdxCall >= 0 ? winCallEquities[heroWinIdxCall] : 0
+    const evWinCall = getHeroICM(winStacksCall)
 
-    // hero calls and loses
+    // hero calls & loses
     const loseStacksCall = [...stacks]
-    loseStacksCall[villainIdx] = villainStack + effectiveStack
     loseStacksCall[heroIdx] = heroStack - effectiveStack
-    const loseCallFiltered = loseStacksCall.map((s, i) => ({ s, i })).filter(x => x.s > 0)
-    const loseCallArr = loseCallFiltered.map(x => x.s)
-    const loseCallPrizes = validPrizes.slice(0, loseCallArr.length)
-    const loseCallEquities = calculateICM(loseCallArr, loseCallPrizes)
-    const heroLoseIdxCall = loseCallFiltered.findIndex(x => x.i === heroIdx)
-    const evLoseCall = heroLoseIdxCall >= 0 ? loseCallEquities[heroLoseIdxCall] : 0
+    loseStacksCall[villainIdx] = villainStack + effectiveStack
+    const evLoseCall = getHeroICM(loseStacksCall)
 
-    // hero folds to push
-    const evFoldCall = baseEquity
-
-    const callEV = eq * evWinCall + (1 - eq) * evLoseCall - evFoldCall
+    // hero folds = baseEquity そのまま
+    const evCall = eq * evWinCall + (1 - eq) * evLoseCall
+    const callEV = (evCall - baseEquity) / totalPrize  // 正規化
 
     results.push({
       hand: h,
