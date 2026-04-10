@@ -63,6 +63,14 @@ export interface PushCallResult {
   equity: number
 }
 
+export interface PotInfo {
+  sb: number
+  bb: number
+  ante: number
+  numPlayers: number
+  heroPosition: 'sb' | 'bb' | 'other'
+}
+
 // Push EV: 複数Villain対応
 // villainIndices: Pushに対してコール判断するVillainのインデックス（順番通りに処理）
 // villainRanges: 各VillainのコールレンジのMap (index -> range)
@@ -72,6 +80,7 @@ export async function calcPushEV(
   stacks: number[],
   prizes: number[],
   villainRanges: Map<number, string[]>,
+  potInfo: PotInfo,
   onProgress?: (pct: number) => void
 ): Promise<PushCallResult[]> {
   const results: PushCallResult[] = []
@@ -83,7 +92,19 @@ export async function calcPushEV(
   const baseEquity = icmBase[heroIdx]
 
   const heroStack = stacks[heroIdx]
-  const bb = Math.max(Math.round(heroStack / 50), 100)
+
+  // 全員フォールド時にheroが獲得するチップ
+  // SBポジション: すでにSBを出しているのでbb + ante * numPlayers を獲得（自分のSBも含めた全ポットを取るが出した分は戻ってくる形）
+  // 実質獲得 = ポット全体 - heroが出した分 = (sb + bb + ante*N) - sb = bb + ante*N
+  // BBポジション: bb + ante*N をポットから取るが自分のbbを出しているので実質獲得 = sb + ante*N
+  // その他: sb + bb + ante*N を全獲得
+  const { sb, bb, ante, numPlayers, heroPosition } = potInfo
+  const totalPot = sb + bb + ante * numPlayers
+  const foldGain = heroPosition === 'sb'
+    ? bb + ante * numPlayers          // SBはsb分を既に出している
+    : heroPosition === 'bb'
+      ? sb + ante * numPlayers        // BBはbb分を既に出している
+      : totalPot                      // その他は全ポット獲得
 
   // ---- 共通ヘルパー: ICMエクイティ取得 ----
   const getHeroICM = (newStacks: number[]): number => {
@@ -114,12 +135,10 @@ export async function calcPushEV(
       return { vIdx, callFreq, eq, range }
     })
 
-    // 全員フォールドEV
+    // 全員フォールドEV: heroStack + foldGain（ポットを獲得）
     const foldStacksPush = [...stacks]
-    foldStacksPush[heroIdx] = heroStack + bb
-    for (const { vIdx } of villainData) {
-      foldStacksPush[vIdx] = Math.max(0, stacks[vIdx] - bb / villainData.length)
-    }
+    foldStacksPush[heroIdx] = heroStack + foldGain
+    // フォールドしたVillainのスタックは変化なし（アンティは既にポットへ）
     const evAllFold = getHeroICM(foldStacksPush)
 
     // Push EV = 全員フォールド確率 * evAllFold
@@ -140,16 +159,20 @@ export async function calcPushEV(
       const vStack = stacks[vIdx]
       const effectiveStack = Math.min(heroStack, vStack)
 
-      // caller wins
+      // オールイン時のポット: effective * 2 + 残りのブラインド・アンティ
+      // ブラインド・アンティはすでにスタックから差し引かれてポットに入っている想定
+      const sidePot = totalPot  // sb + bb + ante * numPlayers
+
+      // caller wins: heroがeffectiveStack分とサイドポットを獲得
       const winStacksPush = [...stacks]
-      winStacksPush[heroIdx] = heroStack + effectiveStack
-      winStacksPush[vIdx] = vStack - effectiveStack
+      winStacksPush[heroIdx] = heroStack + effectiveStack + sidePot
+      winStacksPush[vIdx] = Math.max(0, vStack - effectiveStack)
       const evWinPush = getHeroICM(winStacksPush)
 
-      // caller loses
+      // caller loses: villainがeffectiveStack分とサイドポットを獲得
       const loseStacksPush = [...stacks]
-      loseStacksPush[heroIdx] = heroStack - effectiveStack
-      loseStacksPush[vIdx] = vStack + effectiveStack
+      loseStacksPush[heroIdx] = Math.max(0, heroStack - effectiveStack)
+      loseStacksPush[vIdx] = vStack + effectiveStack + sidePot
       const evLosePush = getHeroICM(loseStacksPush)
 
       evPush += thisCallProb * (eq * evWinPush + (1 - eq) * evLosePush)
@@ -170,15 +193,16 @@ export async function calcPushEV(
 
     const callVStack = stacks[callVIdx]
     const effectiveStackCall = Math.min(heroStack, callVStack)
+    const sidePotCall = totalPot
 
     const winStacksCall = [...stacks]
-    winStacksCall[heroIdx] = heroStack + effectiveStackCall
-    winStacksCall[callVIdx] = callVStack - effectiveStackCall
+    winStacksCall[heroIdx] = heroStack + effectiveStackCall + sidePotCall
+    winStacksCall[callVIdx] = Math.max(0, callVStack - effectiveStackCall)
     const evWinCall = getHeroICM(winStacksCall)
 
     const loseStacksCall = [...stacks]
-    loseStacksCall[heroIdx] = heroStack - effectiveStackCall
-    loseStacksCall[callVIdx] = callVStack + effectiveStackCall
+    loseStacksCall[heroIdx] = Math.max(0, heroStack - effectiveStackCall)
+    loseStacksCall[callVIdx] = callVStack + effectiveStackCall + sidePotCall
     const evLoseCall = getHeroICM(loseStacksCall)
 
     const evCall = callEqHero * evWinCall + (1 - callEqHero) * evLoseCall

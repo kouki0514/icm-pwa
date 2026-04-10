@@ -1,12 +1,17 @@
 import { useState, useCallback } from 'react'
 import HandGrid from './HandGrid'
-import { topXPercent, calcPushEV, combosInRange, type PushCallResult } from '../lib/pushFold'
+import { topXPercent, calcPushEV, combosInRange, type PushCallResult, type PotInfo } from '../lib/pushFold'
 
 interface Player { id: number; name: string; stack: number }
 interface Props { players: Player[]; prizes: number[] }
 
 export default function PushCallTab({ players, prizes }: Props) {
   const [heroIdx, setHeroIdx] = useState(0)
+  const [heroPosition, setHeroPosition] = useState<PotInfo['heroPosition']>('other')
+  // ポット情報
+  const [sbAmount, setSbAmount] = useState(100)
+  const [bbAmount, setBbAmount] = useState(200)
+  const [anteAmount, setAnteAmount] = useState(0)
   // Push: 複数Villain選択
   const [pushVillainIndices, setPushVillainIndices] = useState<number[]>([1])
   // Push: 各VillainのコールレンジPct (index -> pct)
@@ -74,6 +79,13 @@ export default function PushCallTab({ players, prizes }: Props) {
     setProgress(0)
     const stacks = players.map(p => p.stack)
     const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
+    const pot: PotInfo = {
+      sb: sbAmount,
+      bb: bbAmount,
+      ante: anteAmount,
+      numPlayers: players.length,
+      heroPosition,
+    }
 
     try {
       if (mode === 'push') {
@@ -82,19 +94,18 @@ export default function PushCallTab({ players, prizes }: Props) {
           const pct = pushVillainPcts.get(vIdx) ?? 30
           rangesMap.set(vIdx, topXPercent(pct))
         }
-        const res = await calcPushEV(heroIdx, pushVillainIndices, stacks, validPrizes, rangesMap, (pct) => setProgress(pct))
+        const res = await calcPushEV(heroIdx, pushVillainIndices, stacks, validPrizes, rangesMap, pot, (pct) => setProgress(pct))
         setResults(res)
       } else {
-        // Call分析: villainIndices=[callVillainIdx], ranges={callVillainIdx: callVillainRange}
         const rangesMap = new Map<number, string[]>([[callVillainIdx, [...callVillainRange]]])
-        const res = await calcPushEV(heroIdx, [callVillainIdx], stacks, validPrizes, rangesMap, (pct) => setProgress(pct))
+        const res = await calcPushEV(heroIdx, [callVillainIdx], stacks, validPrizes, rangesMap, pot, (pct) => setProgress(pct))
         setResults(res)
       }
     } finally {
       setComputing(false)
       setProgress(100)
     }
-  }, [heroIdx, pushVillainIndices, pushVillainPcts, callVillainIdx, callVillainRange, mode, players, prizes])
+  }, [heroIdx, heroPosition, sbAmount, bbAmount, anteAmount, pushVillainIndices, pushVillainPcts, callVillainIdx, callVillainRange, mode, players, prizes])
 
   const colorMap = new Map<string, 'push' | 'call' | 'both' | 'none'>()
   if (results) {
@@ -128,7 +139,48 @@ export default function PushCallTab({ players, prizes }: Props) {
               ))}
             </select>
           </div>
+          <div className="flex items-center gap-3">
+            <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Position</label>
+            <select className="input-base" value={heroPosition} onChange={e => { setHeroPosition(e.target.value as PotInfo['heroPosition']); setResults(null) }}>
+              <option value="other">その他（BTN/UTGなど）</option>
+              <option value="sb">SB</option>
+              <option value="bb">BB</option>
+            </select>
+          </div>
+        </div>
 
+        {/* ポット情報 */}
+        <div className="mb-4">
+          <div className="font-mono text-xs text-slate-500 mb-2">ブラインド・アンティ</div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="font-mono text-xs text-slate-500 block mb-1">SB</label>
+              <input type="number" min={0} value={sbAmount}
+                onChange={e => { setSbAmount(Math.max(0, +e.target.value)); setResults(null) }}
+                className="input-base w-full" />
+            </div>
+            <div>
+              <label className="font-mono text-xs text-slate-500 block mb-1">BB</label>
+              <input type="number" min={0} value={bbAmount}
+                onChange={e => { setBbAmount(Math.max(0, +e.target.value)); setResults(null) }}
+                className="input-base w-full" />
+            </div>
+            <div>
+              <label className="font-mono text-xs text-slate-500 block mb-1">Ante（/人）</label>
+              <input type="number" min={0} value={anteAmount}
+                onChange={e => { setAnteAmount(Math.max(0, +e.target.value)); setResults(null) }}
+                className="input-base w-full" />
+            </div>
+          </div>
+          <div className="font-mono text-xs text-slate-600 mt-1">
+            ポット合計: {(sbAmount + bbAmount + anteAmount * players.length).toLocaleString()} chips
+            {heroPosition === 'sb' && <span className="text-slate-500 ml-2">（SBのためフォールド獲得: {(bbAmount + anteAmount * players.length).toLocaleString()}）</span>}
+            {heroPosition === 'bb' && <span className="text-slate-500 ml-2">（BBのためフォールド獲得: {(sbAmount + anteAmount * players.length).toLocaleString()}）</span>}
+          </div>
+        </div>
+
+        {/* Villain 選択 */}
+        <div className="mb-4">
           {mode === 'push' ? (
             /* Push: 複数Villain チェックボックス + 個別スライダー */
             <div className="space-y-2">
