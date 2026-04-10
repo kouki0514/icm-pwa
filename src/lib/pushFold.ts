@@ -63,12 +63,15 @@ export interface PushCallResult {
   equity: number
 }
 
+// Push EV: 複数Villain対応
+// villainIndices: Pushに対してコール判断するVillainのインデックス（順番通りに処理）
+// villainRanges: 各VillainのコールレンジのMap (index -> range)
 export async function calcPushEV(
   heroIdx: number,
-  villainIdx: number,
+  villainIndices: number[],
   stacks: number[],
   prizes: number[],
-  villainRange: string[],
+  villainRanges: Map<number, string[]>,
   onProgress?: (pct: number) => void
 ): Promise<PushCallResult[]> {
   const results: PushCallResult[] = []
@@ -77,12 +80,20 @@ export async function calcPushEV(
   if (totalPrize === 0) return []
 
   const icmBase = calculateICM(stacks, validPrizes)
-  const baseEquity = icmBase[heroIdx]  // 賞金額（例: 150000円）
+  const baseEquity = icmBase[heroIdx]
 
   const heroStack = stacks[heroIdx]
-  const villainStack = stacks[villainIdx]
-  const effectiveStack = Math.min(heroStack, villainStack)
-  const bb = Math.max(Math.round((heroStack + villainStack) / 100), 100)
+  const bb = Math.max(Math.round(heroStack / 50), 100)
+
+  // ---- 共通ヘルパー: ICMエクイティ取得 ----
+  const getHeroICM = (newStacks: number[]): number => {
+    const filtered = newStacks.map((s, i) => ({ s, i })).filter(x => x.s > 0)
+    const arr = filtered.map(x => x.s)
+    const prz = validPrizes.slice(0, arr.length)
+    const eq2 = calculateICM(arr, prz)
+    const idx = filtered.findIndex(x => x.i === heroIdx)
+    return idx >= 0 ? eq2[idx] : 0
+  }
 
   for (let hi = 0; hi < ALL_HANDS.length; hi++) {
     const h = ALL_HANDS[hi]
@@ -92,61 +103,86 @@ export async function calcPushEV(
     const suited = h.endsWith('s')
     const s1 = 0, s2 = suited ? 0 : 1
 
-    const eq = villainRange.length > 0
-      ? monteCarloEquity(r1, r2, s1, s2, villainRange, [], 400)
-      : 0.5
+    // ---- Push EV (複数Villain) ----
+    // 各Villainの callFreq と equity を事前計算
+    const villainData = villainIndices.map(vIdx => {
+      const range = villainRanges.get(vIdx) ?? []
+      const callFreq = Math.min(combosInRange(range) / 1326, 1)
+      const eq = range.length > 0
+        ? monteCarloEquity(r1, r2, s1, s2, range, [], 400)
+        : 0.5
+      return { vIdx, callFreq, eq, range }
+    })
 
-    // ---- 共通ヘルパー: ICMエクイティ取得 ----
-    const getHeroICM = (newStacks: number[]): number => {
-      const filtered = newStacks.map((s, i) => ({ s, i })).filter(x => x.s > 0)
-      const arr = filtered.map(x => x.s)
-      const prz = validPrizes.slice(0, arr.length)
-      const eq2 = calculateICM(arr, prz)
-      const idx = filtered.findIndex(x => x.i === heroIdx)
-      return idx >= 0 ? eq2[idx] : 0
-    }
-
-    // ---- Push EV ----
-    // villain folds
+    // 全員フォールドEV
     const foldStacksPush = [...stacks]
     foldStacksPush[heroIdx] = heroStack + bb
-    foldStacksPush[villainIdx] = Math.max(0, villainStack - bb)
-    const evFoldPush = getHeroICM(foldStacksPush)
+    for (const { vIdx } of villainData) {
+      foldStacksPush[vIdx] = Math.max(0, stacks[vIdx] - bb / villainData.length)
+    }
+    const evAllFold = getHeroICM(foldStacksPush)
 
-    // villain calls & hero wins
-    const winStacksPush = [...stacks]
-    winStacksPush[heroIdx] = heroStack + effectiveStack
-    winStacksPush[villainIdx] = villainStack - effectiveStack
-    const evWinPush = getHeroICM(winStacksPush)
+    // Push EV = 全員フォールド確率 * evAllFold
+    //         + Σ(各Villainがコールし他は全員フォールド) * (そのVillainとの1対1EV)
+    // 簡略化: 独立コール判断（各自独立）→ 誰かがコールするシナリオを列挙
+    // 全員フォールド確率
+    const allFoldProb = villainData.reduce((p, { callFreq }) => p * (1 - callFreq), 1)
 
-    // villain calls & hero loses
-    const loseStacksPush = [...stacks]
-    loseStacksPush[heroIdx] = heroStack - effectiveStack
-    loseStacksPush[villainIdx] = villainStack + effectiveStack
-    const evLosePush = getHeroICM(loseStacksPush)
+    let evPush = allFoldProb * evAllFold
 
-    // callFreq: villainRange / 169ハンド比率（簡易）
-    const callFreq = Math.min(combosInRange(villainRange) / 1326, 1)
-    const evPush = callFreq * (eq * evWinPush + (1 - eq) * evLosePush)
-                 + (1 - callFreq) * evFoldPush
-    const pushEV = (evPush - baseEquity) / totalPrize  // 正規化
+    // 各Villainがコールする場合（他は全員フォールド、独立仮定）
+    for (const { vIdx, callFreq, eq } of villainData) {
+      const otherFoldProb = villainData
+        .filter(v => v.vIdx !== vIdx)
+        .reduce((p, v) => p * (1 - v.callFreq), 1)
+      const thisCallProb = callFreq * otherFoldProb
 
-    // ---- Call EV ----
-    // hero calls & wins
+      const vStack = stacks[vIdx]
+      const effectiveStack = Math.min(heroStack, vStack)
+
+      // caller wins
+      const winStacksPush = [...stacks]
+      winStacksPush[heroIdx] = heroStack + effectiveStack
+      winStacksPush[vIdx] = vStack - effectiveStack
+      const evWinPush = getHeroICM(winStacksPush)
+
+      // caller loses
+      const loseStacksPush = [...stacks]
+      loseStacksPush[heroIdx] = heroStack - effectiveStack
+      loseStacksPush[vIdx] = vStack + effectiveStack
+      const evLosePush = getHeroICM(loseStacksPush)
+
+      evPush += thisCallProb * (eq * evWinPush + (1 - eq) * evLosePush)
+    }
+
+    // 複数同時コールは無視（独立仮定の残余確率はここでは省略）
+
+    const pushEV = (evPush - baseEquity) / totalPrize
+
+    // ---- Call EV (1対1: villainIndicesの先頭1人) ----
+    // Call分析用は呼び出し元から別途1人のvillainIdxを渡す想定だが
+    // ここでは互換のためvillainIndices[0]を使用
+    const callVIdx = villainIndices[0]
+    const callRange = villainRanges.get(callVIdx) ?? []
+    const callEqHero = callRange.length > 0
+      ? monteCarloEquity(r1, r2, s1, s2, callRange, [], 400)
+      : 0.5
+
+    const callVStack = stacks[callVIdx]
+    const effectiveStackCall = Math.min(heroStack, callVStack)
+
     const winStacksCall = [...stacks]
-    winStacksCall[heroIdx] = heroStack + effectiveStack
-    winStacksCall[villainIdx] = villainStack - effectiveStack
+    winStacksCall[heroIdx] = heroStack + effectiveStackCall
+    winStacksCall[callVIdx] = callVStack - effectiveStackCall
     const evWinCall = getHeroICM(winStacksCall)
 
-    // hero calls & loses
     const loseStacksCall = [...stacks]
-    loseStacksCall[heroIdx] = heroStack - effectiveStack
-    loseStacksCall[villainIdx] = villainStack + effectiveStack
+    loseStacksCall[heroIdx] = heroStack - effectiveStackCall
+    loseStacksCall[callVIdx] = callVStack + effectiveStackCall
     const evLoseCall = getHeroICM(loseStacksCall)
 
-    // hero folds = baseEquity そのまま
-    const evCall = eq * evWinCall + (1 - eq) * evLoseCall
-    const callEV = (evCall - baseEquity) / totalPrize  // 正規化
+    const evCall = callEqHero * evWinCall + (1 - callEqHero) * evLoseCall
+    const callEV = (evCall - baseEquity) / totalPrize
 
     results.push({
       hand: h,
@@ -154,7 +190,7 @@ export async function calcPushEV(
       callEV,
       shouldPush: pushEV > 0,
       shouldCall: callEV > 0,
-      equity: eq,
+      equity: callEqHero,
     })
   }
 

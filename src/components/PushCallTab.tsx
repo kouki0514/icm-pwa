@@ -7,38 +7,94 @@ interface Props { players: Player[]; prizes: number[] }
 
 export default function PushCallTab({ players, prizes }: Props) {
   const [heroIdx, setHeroIdx] = useState(0)
-  const [villainIdx, setVillainIdx] = useState(1)
-  const [villainCallRange, setVillainCallRange] = useState<Set<string>>(new Set(topXPercent(30)))
-  const [villainPushRange, setVillainPushRange] = useState<Set<string>>(new Set(topXPercent(40)))
+  // Push: 複数Villain選択
+  const [pushVillainIndices, setPushVillainIndices] = useState<number[]>([1])
+  // Push: 各VillainのコールレンジPct (index -> pct)
+  const [pushVillainPcts, setPushVillainPcts] = useState<Map<number, number>>(new Map([[1, 30]]))
+  // Call: 1人選択
+  const [callVillainIdx, setCallVillainIdx] = useState(1)
+  const [callVillainPct, setCallVillainPct] = useState(40)
+  const [callVillainRange, setCallVillainRange] = useState<Set<string>>(new Set(topXPercent(40)))
   const [rangeInputMode, setRangeInputMode] = useState<'grid' | 'pct'>('pct')
-  const [callPct, setCallPct] = useState(30)
-  const [pushPct, setPushPct] = useState(40)
   const [mode, setMode] = useState<'push' | 'call'>('push')
   const [results, setResults] = useState<PushCallResult[] | null>(null)
   const [computing, setComputing] = useState(false)
   const [progress, setProgress] = useState(0)
 
   const heroStack = players[heroIdx]?.stack ?? 0
-  const villainStack = players[villainIdx]?.stack ?? 0
-  const effectiveStack = Math.min(heroStack, villainStack)
-  const heroIsCovered = villainStack >= heroStack
   const totalChips = players.reduce((a, b) => a + b.stack, 0)
 
+  // Push時の実効スタック（複数Villainの場合は最小）
+  const pushEffectiveStack = pushVillainIndices.length > 0
+    ? Math.min(heroStack, ...pushVillainIndices.map(i => players[i]?.stack ?? 0))
+    : 0
+  // Call時の実効スタック
+  const callEffectiveStack = Math.min(heroStack, players[callVillainIdx]?.stack ?? 0)
+
+  const effectiveStack = mode === 'push' ? pushEffectiveStack : callEffectiveStack
+  const callVillainStack = players[callVillainIdx]?.stack ?? 0
+  const heroIsCovered = mode === 'call'
+    ? callVillainStack >= heroStack
+    : pushVillainIndices.some(i => (players[i]?.stack ?? 0) >= heroStack)
+
+  // Push Villain選択トグル
+  const togglePushVillain = (idx: number) => {
+    setPushVillainIndices(prev => {
+      if (prev.includes(idx)) {
+        if (prev.length === 1) return prev // 最低1人
+        return prev.filter(i => i !== idx)
+      } else {
+        const next = [...prev, idx].sort((a, b) => a - b)
+        // 新規追加分のデフォルトpct設定
+        setPushVillainPcts(pcts => {
+          const m = new Map(pcts)
+          if (!m.has(idx)) m.set(idx, 30)
+          return m
+        })
+        return next
+      }
+    })
+    setResults(null)
+  }
+
+  const setPushVillainPct = (idx: number, pct: number) => {
+    setPushVillainPcts(prev => {
+      const m = new Map(prev)
+      m.set(idx, pct)
+      return m
+    })
+    setResults(null)
+  }
+
   const run = useCallback(async () => {
-    if (players.length < 2 || heroIdx === villainIdx) return
+    if (players.length < 2) return
+    if (mode === 'push' && pushVillainIndices.includes(heroIdx)) return
+    if (mode === 'call' && callVillainIdx === heroIdx) return
     setComputing(true)
     setProgress(0)
     const stacks = players.map(p => p.stack)
     const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
-    const range = mode === 'push' ? [...villainCallRange] : [...villainPushRange]
+
     try {
-      const res = await calcPushEV(heroIdx, villainIdx, stacks, validPrizes, range, (pct) => setProgress(pct))
-      setResults(res)
+      if (mode === 'push') {
+        const rangesMap = new Map<number, string[]>()
+        for (const vIdx of pushVillainIndices) {
+          const pct = pushVillainPcts.get(vIdx) ?? 30
+          rangesMap.set(vIdx, topXPercent(pct))
+        }
+        const res = await calcPushEV(heroIdx, pushVillainIndices, stacks, validPrizes, rangesMap, (pct) => setProgress(pct))
+        setResults(res)
+      } else {
+        // Call分析: villainIndices=[callVillainIdx], ranges={callVillainIdx: callVillainRange}
+        const rangesMap = new Map<number, string[]>([[callVillainIdx, [...callVillainRange]]])
+        const res = await calcPushEV(heroIdx, [callVillainIdx], stacks, validPrizes, rangesMap, (pct) => setProgress(pct))
+        setResults(res)
+      }
     } finally {
       setComputing(false)
       setProgress(100)
     }
-  }, [heroIdx, villainIdx, villainCallRange, villainPushRange, mode, players, prizes])
+  }, [heroIdx, pushVillainIndices, pushVillainPcts, callVillainIdx, callVillainRange, mode, players, prizes])
 
   const colorMap = new Map<string, 'push' | 'call' | 'both' | 'none'>()
   if (results) {
@@ -48,10 +104,6 @@ export default function PushCallTab({ players, prizes }: Props) {
     }
   }
 
-  const activeRange = mode === 'push' ? villainCallRange : villainPushRange
-  const setActiveRange = mode === 'push' ? setVillainCallRange : setVillainPushRange
-  const activePct = mode === 'push' ? callPct : pushPct
-  const setActivePct = mode === 'push' ? setCallPct : setPushPct
   const goodCount = results?.filter(r => mode === 'push' ? r.shouldPush : r.shouldCall).length ?? 0
 
   return (
@@ -66,24 +118,65 @@ export default function PushCallTab({ players, prizes }: Props) {
           ))}
         </div>
 
-        {/* Hero / Villain 選択 */}
+        {/* Hero 選択 */}
         <div className="space-y-2 mb-4">
           <div className="flex items-center gap-3">
             <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Hero</label>
             <select className="input-base" value={heroIdx} onChange={e => { setHeroIdx(+e.target.value); setResults(null) }}>
-              {players.map((p, i) => i !== villainIdx && (
+              {players.map((p, i) => (
                 <option key={p.id} value={i}>{p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)</option>
               ))}
             </select>
           </div>
-          <div className="flex items-center gap-3">
-            <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Villain</label>
-            <select className="input-base" value={villainIdx} onChange={e => { setVillainIdx(+e.target.value); setResults(null) }}>
-              {players.map((p, i) => i !== heroIdx && (
-                <option key={p.id} value={i}>{p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)</option>
-              ))}
-            </select>
-          </div>
+
+          {mode === 'push' ? (
+            /* Push: 複数Villain チェックボックス + 個別スライダー */
+            <div className="space-y-2">
+              <label className="font-mono text-xs text-slate-500">Villain（コール判断するプレイヤー）</label>
+              {players.map((p, i) => {
+                if (i === heroIdx) return null
+                const checked = pushVillainIndices.includes(i)
+                const pct = pushVillainPcts.get(i) ?? 30
+                const range = topXPercent(pct)
+                return (
+                  <div key={p.id} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id={`push-villain-${i}`}
+                        checked={checked}
+                        onChange={() => togglePushVillain(i)}
+                        className="accent-gold-400"
+                      />
+                      <label htmlFor={`push-villain-${i}`} className="font-mono text-xs text-slate-200 cursor-pointer flex-1">
+                        {p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)
+                      </label>
+                    </div>
+                    {checked && (
+                      <div className="flex items-center gap-3 pl-5">
+                        <input type="range" min={1} max={100} step={1} value={pct}
+                          onChange={e => setPushVillainPct(i, +e.target.value)}
+                          className="flex-1" />
+                        <span className="font-mono text-xs text-gold-400 w-36 text-right flex-shrink-0">
+                          コールTop {pct}% ({combosInRange(range)}c)
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          ) : (
+            /* Call: 1人選択 */
+            <div className="flex items-center gap-3">
+              <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Villain</label>
+              <select className="input-base" value={callVillainIdx} onChange={e => { setCallVillainIdx(+e.target.value); setResults(null) }}>
+                {players.map((p, i) => i !== heroIdx && (
+                  <option key={p.id} value={i}>{p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* カバー状況 */}
@@ -92,37 +185,37 @@ export default function PushCallTab({ players, prizes }: Props) {
           <span className="text-slate-500 ml-auto">effective: {effectiveStack.toLocaleString()} chips</span>
         </div>
 
-        {/* Villain レンジ */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <span className="font-mono text-xs text-slate-500">
-              {mode === 'push' ? 'Villain コールレンジ' : 'Villain プッシュレンジ'}
-            </span>
-            <div className="flex gap-1">
-              {(['pct', 'grid'] as const).map(m => (
-                <button key={m} onClick={() => setRangeInputMode(m)}
-                  className={`font-mono text-xs px-2 py-0.5 rounded border transition-colors ${rangeInputMode === m ? 'border-gold-400 text-gold-400' : 'border-surface-600 text-slate-500'}`}>
-                  {m === 'pct' ? '%指定' : 'グリッド'}
-                </button>
-              ))}
+        {/* Call分析のVillainプッシュレンジ */}
+        {mode === 'call' && (
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="font-mono text-xs text-slate-500">Villain プッシュレンジ</span>
+              <div className="flex gap-1">
+                {(['pct', 'grid'] as const).map(m => (
+                  <button key={m} onClick={() => setRangeInputMode(m)}
+                    className={`font-mono text-xs px-2 py-0.5 rounded border transition-colors ${rangeInputMode === m ? 'border-gold-400 text-gold-400' : 'border-surface-600 text-slate-500'}`}>
+                    {m === 'pct' ? '%指定' : 'グリッド'}
+                  </button>
+                ))}
+              </div>
             </div>
+            {rangeInputMode === 'pct' ? (
+              <div className="flex items-center gap-3">
+                <input type="range" min={1} max={100} step={1} value={callVillainPct}
+                  onChange={e => { const v = +e.target.value; setCallVillainPct(v); setCallVillainRange(new Set(topXPercent(v))); setResults(null) }}
+                  className="flex-1" />
+                <span className="font-mono text-sm text-gold-400 w-36 text-right flex-shrink-0">
+                  Top {callVillainPct}% ({combosInRange([...callVillainRange])}c)
+                </span>
+              </div>
+            ) : (
+              <HandGrid selected={callVillainRange} onChange={s => { setCallVillainRange(s); setResults(null) }} />
+            )}
           </div>
-          {rangeInputMode === 'pct' ? (
-            <div className="flex items-center gap-3">
-              <input type="range" min={1} max={100} step={1} value={activePct}
-                onChange={e => { const v = +e.target.value; setActivePct(v); setActiveRange(new Set(topXPercent(v))); setResults(null) }}
-                className="flex-1" />
-              <span className="font-mono text-sm text-gold-400 w-36 text-right flex-shrink-0">
-                Top {activePct}% ({combosInRange([...activeRange])}c)
-              </span>
-            </div>
-          ) : (
-            <HandGrid selected={activeRange} onChange={s => { setActiveRange(s); setResults(null) }} />
-          )}
-        </div>
+        )}
       </div>
 
-      <button onClick={run} disabled={computing || heroIdx === villainIdx}
+      <button onClick={run} disabled={computing || (mode === 'push' ? pushVillainIndices.includes(heroIdx) : callVillainIdx === heroIdx)}
         className="btn-primary w-full disabled:opacity-50 disabled:cursor-wait">
         {computing ? `計算中... ${progress}%` : '全169ハンドを計算'}
       </button>
@@ -141,8 +234,15 @@ export default function PushCallTab({ players, prizes }: Props) {
               <div className="font-mono text-xl font-semibold text-green-400">{goodCount} / 169</div>
             </div>
             <div className="bg-surface-800 rounded-lg p-3">
-              <div className="font-mono text-xs text-slate-500 mb-1">Villain範囲</div>
-              <div className="font-mono text-xl font-semibold text-gold-400">Top {activePct}%</div>
+              <div className="font-mono text-xs text-slate-500 mb-1">
+                {mode === 'push' ? `Villain (${pushVillainIndices.length}人)` : 'Villain範囲'}
+              </div>
+              <div className="font-mono text-xl font-semibold text-gold-400">
+                {mode === 'push'
+                  ? pushVillainIndices.map(i => `${pushVillainPcts.get(i) ?? 30}%`).join('/')
+                  : `Top ${callVillainPct}%`
+                }
+              </div>
             </div>
             <div className="bg-surface-800 rounded-lg p-3">
               <div className="font-mono text-xs text-slate-500 mb-1">実効スタック</div>
