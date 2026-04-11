@@ -24,6 +24,10 @@ export default function App() {
   const [heroIdx, setHeroIdx] = useState(0)
   const [villainIdx, setVillainIdx] = useState(1)
   const [bubbleResult, setBubbleResult] = useState<{ bf: number; gain: number; loss: number } | null>(null)
+  const [inputMode, setInputMode] = useState<'detail' | 'simple'>('detail')
+  const [simpleNumPlayers, setSimpleNumPlayers] = useState(6)
+  const [simpleAvgStack, setSimpleAvgStack] = useState(15000)
+  const [simpleHeroStack, setSimpleHeroStack] = useState(20000)
 
   const totalChips = players.reduce((a, b) => a + b.stack, 0)
   const totalPrize = prizes.reduce((a, b) => a + b, 0)
@@ -38,18 +42,34 @@ export default function App() {
 
   const calculate = useCallback(() => {
     setError('')
-    if (players.length < 2) { setError('プレイヤーは2人以上必要です'); return }
-    if (players.some(p => p.stack <= 0)) { setError('スタックは全員0より大きくしてください'); return }
     const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
     if (validPrizes.length === 0) { setError('賞金を1つ以上設定してください'); return }
-    const stacks = players.map(p => p.stack)
+
+    let targetPlayers = players
+    if (inputMode === 'simple') {
+      if (simpleNumPlayers < 2) { setError('残り人数は2以上にしてください'); return }
+      if (simpleHeroStack <= 0 || simpleAvgStack <= 0) { setError('スタックは0より大きくしてください'); return }
+      const generated: Player[] = [
+        { id: 1, name: 'Hero', stack: simpleHeroStack },
+        ...Array.from({ length: simpleNumPlayers - 1 }, (_, i) => ({
+          id: i + 2, name: `Villain ${i + 1}`, stack: simpleAvgStack,
+        })),
+      ]
+      setPlayers(generated)
+      targetPlayers = generated
+    } else {
+      if (players.length < 2) { setError('プレイヤーは2人以上必要です'); return }
+      if (players.some(p => p.stack <= 0)) { setError('スタックは全員0より大きくしてください'); return }
+    }
+
+    const stacks = targetPlayers.map(p => p.stack)
     const equity = calculateICM(stacks, validPrizes)
     const total = stacks.reduce((a, b) => a + b, 0)
-    const res: Result[] = players.map((p, i) => ({ player: p, equity: equity[i], chipPct: (p.stack / total) * 100, rank: 0 }))
+    const res: Result[] = targetPlayers.map((p, i) => ({ player: p, equity: equity[i], chipPct: (p.stack / total) * 100, rank: 0 }))
     res.sort((a, b) => b.equity - a.equity)
     res.forEach((r, i) => { r.rank = i + 1 })
     setResults(res)
-  }, [players, prizes])
+  }, [players, prizes, inputMode, simpleNumPlayers, simpleAvgStack, simpleHeroStack])
 
   const calcBubble = useCallback(() => {
     if (heroIdx === villainIdx) { setBubbleResult(null); return }
@@ -124,19 +144,55 @@ export default function App() {
             <div className="card">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">プレイヤー</h2>
-                <span className="font-mono text-xs text-gold-400">合計 {totalChips.toLocaleString()} chips</span>
+                <div className="flex gap-1">
+                  {(['detail', 'simple'] as const).map(m => (
+                    <button key={m} onClick={() => { setInputMode(m); setResults(null) }}
+                      className={`font-mono text-xs px-2 py-0.5 rounded border transition-colors ${inputMode === m ? 'border-gold-400 text-gold-400' : 'border-surface-600 text-slate-500'}`}>
+                      {m === 'detail' ? '個別入力' : '簡易入力'}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="space-y-2">
-                {players.map(p => (
-                  <div key={p.id} className="flex items-center gap-2">
-                    <input type="text" className="input-base" style={{width:'110px',flexShrink:0}} value={p.name} onChange={e=>updatePlayer(p.id,'name',e.target.value)} placeholder="名前" />
-                    <input type="number" className="input-base" value={p.stack} min={0} step={500} onChange={e=>updatePlayer(p.id,'stack',+e.target.value)} />
-                    <span className="font-mono text-xs text-slate-600 w-12 text-right flex-shrink-0">{totalChips>0?((p.stack/totalChips)*100).toFixed(1):'0.0'}%</span>
-                    {players.length>2 && <button onClick={()=>removePlayer(p.id)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
+
+              {inputMode === 'detail' ? (
+                <>
+                  <div className="space-y-2">
+                    {players.map(p => (
+                      <div key={p.id} className="flex items-center gap-2">
+                        <input type="text" className="input-base" style={{width:'110px',flexShrink:0}} value={p.name} onChange={e=>updatePlayer(p.id,'name',e.target.value)} placeholder="名前" />
+                        <input type="number" className="input-base" value={p.stack} min={0} step={500} onChange={e=>updatePlayer(p.id,'stack',+e.target.value)} />
+                        <span className="font-mono text-xs text-slate-600 w-12 text-right flex-shrink-0">{totalChips>0?((p.stack/totalChips)*100).toFixed(1):'0.0'}%</span>
+                        {players.length>2 && <button onClick={()=>removePlayer(p.id)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <button onClick={addPlayer} className="mt-3 w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors">+ プレイヤーを追加</button>
+                  <button onClick={addPlayer} className="mt-3 w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors">+ プレイヤーを追加</button>
+                </>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">残り人数</label>
+                    <input type="number" className="input-base" min={2} step={1} value={simpleNumPlayers}
+                      onChange={e => { setSimpleNumPlayers(Math.max(2, +e.target.value)); setResults(null) }} />
+                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">人</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">平均スタック</label>
+                    <input type="number" className="input-base" min={1} step={500} value={simpleAvgStack}
+                      onChange={e => { setSimpleAvgStack(Math.max(1, +e.target.value)); setResults(null) }} />
+                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">chips</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">自分のスタック</label>
+                    <input type="number" className="input-base" min={1} step={500} value={simpleHeroStack}
+                      onChange={e => { setSimpleHeroStack(Math.max(1, +e.target.value)); setResults(null) }} />
+                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">chips</span>
+                  </div>
+                  <div className="font-mono text-xs text-slate-600 pt-1">
+                    Hero {simpleHeroStack.toLocaleString()} + Villain×{simpleNumPlayers - 1}人 {simpleAvgStack.toLocaleString()} chips
+                  </div>
+                </div>
+              )}
             </div>
 
             {error && <p className="font-mono text-xs text-red-400 px-1">{error}</p>}
