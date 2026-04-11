@@ -5,10 +5,36 @@ import { topXPercent, calcPushEV, combosInRange, type PushCallResult, type PotIn
 interface Player { id: number; name: string; stack: number }
 interface Props { players: Player[]; prizes: number[] }
 
+// テーブル末尾からの座席順: index 0 = 末尾(SB), 1 = BB, 2 = BTN, 3 = CO, 4 = HJ, 5 = UTG
+const SEAT_ORDER = ['SB', 'BB', 'BTN', 'CO', 'HJ', 'UTG'] as const
+type PositionLabel = 'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
+
+// heroのポジションより後ろ（アクション後でコールしてくる）ポジション
+const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
+  UTG: ['HJ', 'CO', 'BTN', 'SB', 'BB'],
+  HJ:  ['CO', 'BTN', 'SB', 'BB'],
+  CO:  ['BTN', 'SB', 'BB'],
+  BTN: ['SB', 'BB'],
+  SB:  ['BB'],
+  BB:  [],
+}
+
+// players配列のインデックスにポジションを割り当てる
+// 末尾から SB, BB, BTN, CO, HJ, UTG の順
+function assignPositions(numPlayers: number): PositionLabel[] {
+  return Array.from({ length: numPlayers }, (_, i) => {
+    const fromEnd = numPlayers - 1 - i  // 0=末尾(SB), 1=BB, ...
+    return (SEAT_ORDER[fromEnd] ?? 'UTG') as PositionLabel
+  })
+}
+
 export default function PushCallTab({ players, prizes }: Props) {
   const [heroIdx, setHeroIdx] = useState(0)
-  const [heroPositionLabel, setHeroPositionLabel] = useState<'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'>('BTN')
+  const [heroPositionLabel, setHeroPositionLabel] = useState<PositionLabel>('BTN')
   const heroPosition: PotInfo['heroPosition'] = heroPositionLabel === 'SB' ? 'sb' : heroPositionLabel === 'BB' ? 'bb' : 'other'
+
+  // players のポジション割り当て（レンダー時に都度計算）
+  const positionLabels = assignPositions(players.length)  // positionLabels[i] = players[i] のポジション
   // ポット情報
   const [sbAmount, setSbAmount] = useState(100)
   const [bbAmount, setBbAmount] = useState(200)
@@ -42,6 +68,32 @@ export default function PushCallTab({ players, prizes }: Props) {
   const heroIsCovered = mode === 'call'
     ? callVillainStack >= heroStack
     : pushVillainIndices.some(i => (players[i]?.stack ?? 0) >= heroStack)
+
+  // ポジション変更: heroIdx と pushVillainIndices を自動設定
+  const handlePositionChange = (pos: PositionLabel) => {
+    setHeroPositionLabel(pos)
+    setResults(null)
+    // heroIdx をポジションに対応するプレイヤーに合わせる
+    const newHeroIdx = positionLabels.indexOf(pos)
+    if (newHeroIdx >= 0) setHeroIdx(newHeroIdx)
+    const resolvedHeroIdx = newHeroIdx >= 0 ? newHeroIdx : heroIdx
+    // コール対象ポジションのプレイヤーインデックスを自動チェック
+    const callerPositions = CALLERS_FROM[pos]
+    const autoIndices = positionLabels
+      .map((p, i) => ({ p, i }))
+      .filter(({ p, i }) => callerPositions.includes(p) && i !== resolvedHeroIdx)
+      .map(({ i }) => i)
+    if (autoIndices.length > 0) {
+      setPushVillainIndices(autoIndices)
+      setPushVillainPcts(prev => {
+        const m = new Map(prev)
+        for (const idx of autoIndices) {
+          if (!m.has(idx)) m.set(idx, 30)
+        }
+        return m
+      })
+    }
+  }
 
   // Push Villain選択トグル
   const togglePushVillain = (idx: number) => {
@@ -142,7 +194,7 @@ export default function PushCallTab({ players, prizes }: Props) {
           </div>
           <div className="flex items-center gap-3">
             <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Position</label>
-            <select className="input-base" value={heroPositionLabel} onChange={e => { setHeroPositionLabel(e.target.value as 'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'); setResults(null) }}>
+            <select className="input-base" value={heroPositionLabel} onChange={e => handlePositionChange(e.target.value as PositionLabel)}>
               {(['UTG', 'HJ', 'CO', 'BTN', 'SB', 'BB'] as const).map(pos => (
                 <option key={pos} value={pos}>{pos}</option>
               ))}
@@ -191,6 +243,7 @@ export default function PushCallTab({ players, prizes }: Props) {
                 const checked = pushVillainIndices.includes(i)
                 const pct = pushVillainPcts.get(i) ?? 30
                 const range = topXPercent(pct)
+                const posLabel = positionLabels[i]
                 return (
                   <div key={p.id} className="space-y-1">
                     <div className="flex items-center gap-2">
@@ -202,7 +255,7 @@ export default function PushCallTab({ players, prizes }: Props) {
                         className="accent-gold-400"
                       />
                       <label htmlFor={`push-villain-${i}`} className="font-mono text-xs text-slate-200 cursor-pointer flex-1">
-                        {p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)
+                        <span className="text-gold-400 mr-1">[{posLabel}]</span>{p.name} — {p.stack.toLocaleString()} ({((p.stack / totalChips) * 100).toFixed(1)}%)
                       </label>
                     </div>
                     {checked && (
