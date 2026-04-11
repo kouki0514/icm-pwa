@@ -7,7 +7,8 @@ interface Props { players: Player[]; prizes: number[] }
 
 export default function PushCallTab({ players, prizes }: Props) {
   const [heroIdx, setHeroIdx] = useState(0)
-  const [heroPosition, setHeroPosition] = useState<PotInfo['heroPosition']>('other')
+  const [heroPositionLabel, setHeroPositionLabel] = useState<'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'>('BTN')
+  const heroPosition: PotInfo['heroPosition'] = heroPositionLabel === 'SB' ? 'sb' : heroPositionLabel === 'BB' ? 'bb' : 'other'
   // ポット情報
   const [sbAmount, setSbAmount] = useState(100)
   const [bbAmount, setBbAmount] = useState(200)
@@ -141,10 +142,10 @@ export default function PushCallTab({ players, prizes }: Props) {
           </div>
           <div className="flex items-center gap-3">
             <label className="font-mono text-xs text-slate-500 w-16 flex-shrink-0">Position</label>
-            <select className="input-base" value={heroPosition} onChange={e => { setHeroPosition(e.target.value as PotInfo['heroPosition']); setResults(null) }}>
-              <option value="other">その他（BTN/UTGなど）</option>
-              <option value="sb">SB</option>
-              <option value="bb">BB</option>
+            <select className="input-base" value={heroPositionLabel} onChange={e => { setHeroPositionLabel(e.target.value as 'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'); setResults(null) }}>
+              {(['UTG', 'HJ', 'CO', 'BTN', 'SB', 'BB'] as const).map(pos => (
+                <option key={pos} value={pos}>{pos}</option>
+              ))}
             </select>
           </div>
         </div>
