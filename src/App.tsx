@@ -1,287 +1,453 @@
 import { useState, useCallback } from 'react'
 import { calculateICM } from './lib/icm'
-import PushCallTab from './components/PushCallTab'
+import { calcPushEV, topXPercent, type PushCallResult, type PotInfo } from './lib/pushFold'
+import HandGrid from './components/HandGrid'
 
-interface Player { id: number; name: string; stack: number }
-interface Result { player: Player; equity: number; chipPct: number; rank: number }
+// ---- 型定義 ----
+interface TablePlayer { id: number; name: string; stack: number; isHero: boolean }
+type PositionLabel = 'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
 
-let nextId = 6
-const DEFAULT_PLAYERS: Player[] = [
-  { id: 1, name: 'Hero', stack: 35000 },
-  { id: 2, name: 'Villain 1', stack: 28000 },
-  { id: 3, name: 'Villain 2', stack: 22000 },
-  { id: 4, name: 'Villain 3', stack: 15000 },
-  { id: 5, name: 'Villain 4', stack: 10000 },
+const SEAT_ORDER: PositionLabel[] = ['SB', 'BB', 'BTN', 'CO', 'HJ', 'UTG']
+const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
+  UTG: ['HJ', 'CO', 'BTN', 'SB', 'BB'],
+  HJ:  ['CO', 'BTN', 'SB', 'BB'],
+  CO:  ['BTN', 'SB', 'BB'],
+  BTN: ['SB', 'BB'],
+  SB:  ['BB'],
+  BB:  [],
+}
+
+function assignPositions(n: number): PositionLabel[] {
+  return Array.from({ length: n }, (_, i) => {
+    const fromEnd = n - 1 - i
+    return SEAT_ORDER[fromEnd] ?? 'UTG'
+  })
+}
+
+// ---- デフォルト値 ----
+let nextId = 4
+const DEFAULT_TABLE: TablePlayer[] = [
+  { id: 1, name: 'Hero',      stack: 30000, isHero: true  },
+  { id: 2, name: 'Villain 1', stack: 25000, isHero: false },
+  { id: 3, name: 'Villain 2', stack: 15000, isHero: false },
 ]
 const DEFAULT_PRIZES = [500000, 300000, 150000, 50000]
 
+// ---- コンポーネント ----
 export default function App() {
-  const [players, setPlayers] = useState<Player[]>(DEFAULT_PLAYERS)
+  // 賞金構造
   const [prizes, setPrizes] = useState<number[]>(DEFAULT_PRIZES)
-  const [results, setResults] = useState<Result[] | null>(null)
+  const [prizesOpen, setPrizesOpen] = useState(false)
+
+  // トーナメント情報
+  const [totalPlayers, setTotalPlayers] = useState(30)
+  const [avgStack, setAvgStack] = useState(10000)
+
+  // 自テーブル
+  const [tablePlayers, setTablePlayers] = useState<TablePlayer[]>(DEFAULT_TABLE)
+  const [heroPosition, setHeroPosition] = useState<PositionLabel>('BTN')
+
+  // ブラインド・アンティ
+  const [sbAmount, setSbAmount] = useState(100)
+  const [bbAmount, setBbAmount] = useState(200)
+  const [anteAmount, setAnteAmount] = useState(0)
+
+  // 結果
+  const [icmResults, setIcmResults] = useState<{ name: string; stack: number; equity: number; chipPct: number }[] | null>(null)
+  const [bfResults, setBfResults] = useState<{ villain: string; bf: number; gain: number; loss: number }[] | null>(null)
+  const [pushResults, setPushResults] = useState<PushCallResult[] | null>(null)
+  const [computing, setComputing] = useState(false)
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'calc' | 'bubble' | 'pushcall'>('calc')
-  const [heroIdx, setHeroIdx] = useState(0)
-  const [villainIdx, setVillainIdx] = useState(1)
-  const [bubbleResult, setBubbleResult] = useState<{ bf: number; gain: number; loss: number } | null>(null)
-  const [inputMode, setInputMode] = useState<'detail' | 'simple'>('detail')
-  const [simpleNumPlayers, setSimpleNumPlayers] = useState(6)
-  const [simpleAvgStack, setSimpleAvgStack] = useState(15000)
-  const [simpleHeroStack, setSimpleHeroStack] = useState(20000)
 
-  const totalChips = players.reduce((a, b) => a + b.stack, 0)
-  const totalPrize = prizes.reduce((a, b) => a + b, 0)
+  // ---- テーブルプレイヤー操作 ----
+  const addTablePlayer = () => {
+    setTablePlayers(p => [...p, { id: nextId++, name: `Villain ${nextId - 2}`, stack: 10000, isHero: false }])
+  }
+  const removeTablePlayer = (id: number) => {
+    setTablePlayers(p => {
+      if (p.length <= 2) return p
+      return p.filter(x => x.id !== id)
+    })
+  }
+  const updateTablePlayer = (id: number, field: 'name' | 'stack', value: string | number) => {
+    setTablePlayers(p => p.map(x => x.id === id ? { ...x, [field]: value } : x))
+  }
 
-  const addPlayer = () => setPlayers(p => [...p, { id: nextId++, name: `Player ${nextId - 1}`, stack: 10000 }])
-  const removePlayer = (id: number) => setPlayers(p => p.filter(x => x.id !== id))
-  const updatePlayer = (id: number, field: 'name' | 'stack', value: string | number) =>
-    setPlayers(p => p.map(x => x.id === id ? { ...x, [field]: value } : x))
+  // 賞金操作
   const addPrize = () => setPrizes(p => [...p, 0])
   const removePrize = (i: number) => setPrizes(p => p.filter((_, j) => j !== i))
   const updatePrize = (i: number, v: number) => setPrizes(p => p.map((x, j) => j === i ? v : x))
 
-  const calculate = useCallback(() => {
+  // ---- 派生値 ----
+  const heroIdx = tablePlayers.findIndex(p => p.isHero)
+  const tableCount = tablePlayers.length
+  const outsideCount = Math.max(0, totalPlayers - tableCount)
+  const positionLabels = assignPositions(tableCount)
+  const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
+  const totalPrize = validPrizes.reduce((a, b) => a + b, 0)
+
+  // テーブル外プレイヤーを補完してフルplayersリストを生成
+  const buildAllPlayers = useCallback((): { name: string; stack: number }[] => {
+    const outside = outsideCount > 0
+      ? Array.from({ length: outsideCount }, (_, i) => ({ name: `Out${i + 1}`, stack: avgStack }))
+      : []
+    return [...tablePlayers.map(p => ({ name: p.name, stack: p.stack })), ...outside]
+  }, [tablePlayers, outsideCount, avgStack])
+
+  // ---- 計算 ----
+  const calculate = useCallback(async () => {
     setError('')
-    const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
+    if (heroIdx < 0) { setError('Heroが設定されていません'); return }
+    if (tablePlayers.some(p => p.stack <= 0)) { setError('スタックは0より大きくしてください'); return }
     if (validPrizes.length === 0) { setError('賞金を1つ以上設定してください'); return }
+    if (totalPlayers < tableCount) { setError('総人数はテーブル人数以上にしてください'); return }
 
-    let targetPlayers = players
-    if (inputMode === 'simple') {
-      if (simpleNumPlayers < 2) { setError('残り人数は2以上にしてください'); return }
-      if (simpleHeroStack <= 0 || simpleAvgStack <= 0) { setError('スタックは0より大きくしてください'); return }
-      const generated: Player[] = [
-        { id: 1, name: 'Hero', stack: simpleHeroStack },
-        ...Array.from({ length: simpleNumPlayers - 1 }, (_, i) => ({
-          id: i + 2, name: `Villain ${i + 1}`, stack: simpleAvgStack,
-        })),
-      ]
-      setPlayers(generated)
-      targetPlayers = generated
-    } else {
-      if (players.length < 2) { setError('プレイヤーは2人以上必要です'); return }
-      if (players.some(p => p.stack <= 0)) { setError('スタックは全員0より大きくしてください'); return }
+    setComputing(true)
+    setProgress(0)
+    setPushResults(null)
+    setIcmResults(null)
+    setBfResults(null)
+
+    try {
+      const allPlayers = buildAllPlayers()
+      const stacks = allPlayers.map(p => p.stack)
+
+      // ---- ICM計算 ----
+      const icmEquity = calculateICM(stacks, validPrizes)
+      const totalChips = stacks.reduce((a, b) => a + b, 0)
+      setIcmResults(
+        tablePlayers.map((p, i) => ({
+          name: p.name,
+          stack: p.stack,
+          equity: icmEquity[i],
+          chipPct: (p.stack / totalChips) * 100,
+        })).sort((a, b) => b.equity - a.equity)
+      )
+
+      // ---- バブルファクター計算 ----
+      const heroStack = stacks[heroIdx]
+      const baseEquity = icmEquity[heroIdx]
+      const bfList = tablePlayers
+        .map((p, i) => ({ p, i }))
+        .filter(({ i }) => i !== heroIdx)
+        .map(({ p, i }) => {
+          const vStack = stacks[i]
+          const winStacks = [...stacks]
+          winStacks[heroIdx] = heroStack + vStack
+          winStacks[i] = 0
+          const winFiltered = winStacks.filter(s => s > 0)
+          const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
+          // heroのインデックスを再計算（iがheroより前か後かで変わる）
+          const winHeroIdx = heroIdx < i ? heroIdx : heroIdx - 1
+          const heroWin = winICM[winHeroIdx] ?? 0
+          const gain = heroWin - baseEquity
+          const loss = baseEquity
+          const bf = gain > 0 ? loss / gain : Infinity
+          return { villain: p.name, bf, gain, loss }
+        })
+      setBfResults(bfList)
+
+      // ---- Push/Fold計算 ----
+      const callerPositions = CALLERS_FROM[heroPosition]
+      const villainIndices = positionLabels
+        .map((pos, i) => ({ pos, i }))
+        .filter(({ pos, i }) => callerPositions.includes(pos) && i !== heroIdx)
+        .map(({ i }) => i)
+
+      const villainRanges = new Map<number, string[]>()
+      for (const vIdx of villainIndices) {
+        villainRanges.set(vIdx, topXPercent(30))
+      }
+
+      const heroPos: PotInfo['heroPosition'] =
+        heroPosition === 'SB' ? 'sb' : heroPosition === 'BB' ? 'bb' : 'other'
+      const potInfo: PotInfo = {
+        sb: sbAmount, bb: bbAmount, ante: anteAmount,
+        numPlayers: tableCount, heroPosition: heroPos,
+      }
+
+      const pushTargetIndices = villainIndices.length > 0 ? villainIndices : [tablePlayers.findIndex((_, i) => i !== heroIdx)]
+      const res = await calcPushEV(
+        heroIdx, pushTargetIndices, stacks, validPrizes, villainRanges, potInfo,
+        (pct) => setProgress(pct)
+      )
+      setPushResults(res)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setComputing(false)
+      setProgress(100)
     }
+  }, [tablePlayers, heroIdx, heroPosition, positionLabels, prizes, validPrizes, totalPlayers, tableCount, avgStack, sbAmount, bbAmount, anteAmount, buildAllPlayers])
 
-    const stacks = targetPlayers.map(p => p.stack)
-    const equity = calculateICM(stacks, validPrizes)
-    const total = stacks.reduce((a, b) => a + b, 0)
-    const res: Result[] = targetPlayers.map((p, i) => ({ player: p, equity: equity[i], chipPct: (p.stack / total) * 100, rank: 0 }))
-    res.sort((a, b) => b.equity - a.equity)
-    res.forEach((r, i) => { r.rank = i + 1 })
-    setResults(res)
-  }, [players, prizes, inputMode, simpleNumPlayers, simpleAvgStack, simpleHeroStack])
+  // Push/Foldグリッド用colorMap
+  const pushColorMap = new Map<string, 'push' | 'call' | 'both' | 'none'>()
+  if (pushResults) {
+    for (const r of pushResults) {
+      pushColorMap.set(r.hand, r.shouldPush ? 'push' : 'none')
+    }
+  }
 
-  const calcBubble = useCallback(() => {
-    if (heroIdx === villainIdx) { setBubbleResult(null); return }
-    const stacks = players.map(p => p.stack)
-    const validPrizes = prizes.filter(p => p > 0).sort((a, b) => b - a)
-    if (validPrizes.length === 0) return
-    const baseEquity = calculateICM(stacks, validPrizes)
-    const heroStack = stacks[heroIdx]
-    const villainStack = stacks[villainIdx]
-    const winStacks = [...stacks]
-    winStacks[heroIdx] = heroStack + villainStack
-    winStacks.splice(villainIdx, 1)
-    const equityWin = calculateICM(winStacks, validPrizes.slice(0, winStacks.length))
-    const winAdjIdx = heroIdx < villainIdx ? heroIdx : heroIdx - 1
-    const heroWin = equityWin[winAdjIdx] ?? 0
-    const gain = heroWin - baseEquity[heroIdx]
-    const loss = baseEquity[heroIdx]
-    const bf = gain > 0 ? loss / gain : Infinity
-    setBubbleResult({ bf, gain, loss })
-  }, [heroIdx, villainIdx, players, prizes])
-
-  const maxEquity = results ? Math.max(...results.map(r => r.equity)) : 1
-
-  const TABS = [
-    { key: 'calc', label: 'ICM計算' },
-    { key: 'bubble', label: 'バブルファクター' },
-    { key: 'pushcall', label: 'Push/Call分析' },
-  ] as const
+  const pushCount = pushResults?.filter(r => r.shouldPush).length ?? 0
+  const totalChipsDisplay = tablePlayers.reduce((a, b) => a + b.stack, 0)
 
   return (
     <div className="min-h-full bg-surface-900 text-slate-200">
+      {/* ヘッダー */}
       <header className="bg-surface-800 border-b border-surface-600 px-4 py-3 flex items-center gap-3">
         <div className="w-7 h-7 rounded-lg bg-gold-400 flex items-center justify-center">
           <span className="text-surface-900 font-mono font-bold text-xs">ICM</span>
         </div>
-        <h1 className="font-mono font-semibold text-slate-100 text-base">ICM Calculator</h1>
-        <div className="ml-auto flex items-center gap-2 text-xs font-mono text-slate-500">
-          <span>{players.length}人</span><span>·</span><span>¥{totalPrize.toLocaleString()}</span>
-        </div>
+        <h1 className="font-mono font-semibold text-slate-100 text-base">ICM Push/Fold Analyzer</h1>
+        <div className="ml-auto font-mono text-xs text-slate-500">¥{totalPrize.toLocaleString()}</div>
       </header>
 
-      <div className="flex border-b border-surface-600 bg-surface-800 overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`px-4 py-2.5 font-mono text-sm border-b-2 whitespace-nowrap transition-colors ${tab===t.key?'border-gold-400 text-gold-400':'border-transparent text-slate-500 hover:text-slate-300'}`}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       <div className="max-w-2xl mx-auto px-4 py-5 space-y-4">
-        {tab === 'calc' && (
+
+        {/* (1) 賞金構造 — デフォルト折りたたみ */}
+        <div className="card">
+          <button
+            className="w-full flex items-center justify-between"
+            onClick={() => setPrizesOpen(o => !o)}
+          >
+            <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">賞金構造</h2>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs text-gold-400">¥{totalPrize.toLocaleString()} · {validPrizes.length}位まで</span>
+              <span className="font-mono text-xs text-slate-500">{prizesOpen ? '▲' : '▼'}</span>
+            </div>
+          </button>
+          {prizesOpen && (
+            <div className="mt-3 space-y-2">
+              {prizes.map((p, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="font-mono text-xs text-slate-500 w-8 text-right">{i + 1}位</span>
+                  <span className="text-slate-500 text-sm">¥</span>
+                  <input type="number" className="input-base" value={p} min={0} step={1000}
+                    onChange={e => updatePrize(i, +e.target.value)} />
+                  {prizes.length > 1 && (
+                    <button onClick={() => removePrize(i)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>
+                  )}
+                </div>
+              ))}
+              <button onClick={addPrize}
+                className="w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors">
+                + 賞金を追加
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* (2) トーナメント情報 */}
+        <div className="card">
+          <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">トーナメント情報</h2>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-mono text-xs text-slate-500 block mb-1">残り総人数</label>
+              <input type="number" className="input-base w-full" min={2} step={1} value={totalPlayers}
+                onChange={e => setTotalPlayers(Math.max(2, +e.target.value))} />
+            </div>
+            <div>
+              <label className="font-mono text-xs text-slate-500 block mb-1">平均チップ数</label>
+              <input type="number" className="input-base w-full" min={1} step={500} value={avgStack}
+                onChange={e => setAvgStack(Math.max(1, +e.target.value))} />
+            </div>
+          </div>
+          <div className="font-mono text-xs text-slate-600 mt-2">
+            テーブル外 {outsideCount} 人 × {avgStack.toLocaleString()} chips を ICM 計算に補完
+          </div>
+        </div>
+
+        {/* (3) 自テーブル */}
+        <div className="card">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">自テーブル</h2>
+            <span className="font-mono text-xs text-gold-400">{totalChipsDisplay.toLocaleString()} chips</span>
+          </div>
+
+          {/* ポジション選択 */}
+          <div className="flex items-center gap-3 mb-3">
+            <label className="font-mono text-xs text-slate-500 w-24 flex-shrink-0">Heroポジション</label>
+            <div className="flex gap-1 flex-wrap">
+              {(['UTG', 'HJ', 'CO', 'BTN', 'SB', 'BB'] as const).map(pos => (
+                <button key={pos} onClick={() => setHeroPosition(pos)}
+                  className={`font-mono text-xs px-2 py-1 rounded border transition-colors ${heroPosition === pos ? 'bg-gold-400 text-surface-900 border-gold-400' : 'border-surface-600 text-slate-400 hover:text-slate-200'}`}>
+                  {pos}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* プレイヤーリスト */}
+          <div className="space-y-2 mb-3">
+            {tablePlayers.map((p, i) => {
+              const pos = positionLabels[i] ?? ''
+              const isHeroPos = pos === heroPosition
+              return (
+                <div key={p.id} className="flex items-center gap-2">
+                  <span className={`font-mono text-xs w-8 text-center flex-shrink-0 ${isHeroPos ? 'text-gold-400 font-bold' : 'text-slate-600'}`}>
+                    {pos}
+                  </span>
+                  <input type="text" className="input-base" style={{ width: '100px', flexShrink: 0 }}
+                    value={p.name} onChange={e => updateTablePlayer(p.id, 'name', e.target.value)} />
+                  <input type="number" className="input-base" min={0} step={500}
+                    value={p.stack} onChange={e => updateTablePlayer(p.id, 'stack', +e.target.value)} />
+                  <span className="font-mono text-xs text-slate-600 w-10 text-right flex-shrink-0">
+                    {totalChipsDisplay > 0 ? ((p.stack / totalChipsDisplay) * 100).toFixed(0) : 0}%
+                  </span>
+                  {tablePlayers.length > 2 && (
+                    <button onClick={() => removeTablePlayer(p.id)}
+                      className="text-slate-600 hover:text-slate-400 text-lg px-1 flex-shrink-0">×</button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <button onClick={addTablePlayer}
+            className="w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors mb-4">
+            + プレイヤーを追加
+          </button>
+
+          {/* SB / BB / Ante */}
+          <div>
+            <div className="font-mono text-xs text-slate-500 mb-2">ブラインド・アンティ</div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="font-mono text-xs text-slate-500 block mb-1">SB</label>
+                <input type="number" min={0} value={sbAmount}
+                  onChange={e => setSbAmount(Math.max(0, +e.target.value))}
+                  className="input-base w-full" />
+              </div>
+              <div>
+                <label className="font-mono text-xs text-slate-500 block mb-1">BB</label>
+                <input type="number" min={0} value={bbAmount}
+                  onChange={e => setBbAmount(Math.max(0, +e.target.value))}
+                  className="input-base w-full" />
+              </div>
+              <div>
+                <label className="font-mono text-xs text-slate-500 block mb-1">Ante（/人）</label>
+                <input type="number" min={0} value={anteAmount}
+                  onChange={e => setAnteAmount(Math.max(0, +e.target.value))}
+                  className="input-base w-full" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* (4) 計算ボタン */}
+        {error && <p className="font-mono text-xs text-red-400 px-1">{error}</p>}
+        <button onClick={calculate} disabled={computing}
+          className="btn-primary w-full disabled:opacity-50 disabled:cursor-wait">
+          {computing ? `計算中... ${progress}%` : '計算する'}
+        </button>
+        {computing && (
+          <div className="h-1 bg-surface-700 rounded-full overflow-hidden">
+            <div className="h-full bg-gold-400 transition-all duration-200" style={{ width: `${progress}%` }} />
+          </div>
+        )}
+
+        {/* (5) 結果セクション */}
+        {icmResults && (
           <>
+            {/* ICMエクイティ一覧 */}
             <div className="card">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">賞金構造</h2>
-                <span className="font-mono text-xs text-gold-400">合計 ¥{totalPrize.toLocaleString()}</span>
-              </div>
-              <div className="space-y-2">
-                {prizes.map((p, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <span className="font-mono text-xs text-slate-500 w-8 text-right">{i+1}位</span>
-                    <span className="text-slate-500 text-sm">¥</span>
-                    <input type="number" className="input-base" value={p} min={0} step={1000} onChange={e=>updatePrize(i,+e.target.value)} />
-                    {prizes.length>1 && <button onClick={()=>removePrize(i)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
-                  </div>
-                ))}
-              </div>
-              <button onClick={addPrize} className="mt-3 w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors">+ 賞金を追加</button>
-            </div>
-
-            <div className="card">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">プレイヤー</h2>
-                <div className="flex gap-1">
-                  {(['detail', 'simple'] as const).map(m => (
-                    <button key={m} onClick={() => { setInputMode(m); setResults(null) }}
-                      className={`font-mono text-xs px-2 py-0.5 rounded border transition-colors ${inputMode === m ? 'border-gold-400 text-gold-400' : 'border-surface-600 text-slate-500'}`}>
-                      {m === 'detail' ? '個別入力' : '簡易入力'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {inputMode === 'detail' ? (
-                <>
-                  <div className="space-y-2">
-                    {players.map(p => (
-                      <div key={p.id} className="flex items-center gap-2">
-                        <input type="text" className="input-base" style={{width:'110px',flexShrink:0}} value={p.name} onChange={e=>updatePlayer(p.id,'name',e.target.value)} placeholder="名前" />
-                        <input type="number" className="input-base" value={p.stack} min={0} step={500} onChange={e=>updatePlayer(p.id,'stack',+e.target.value)} />
-                        <span className="font-mono text-xs text-slate-600 w-12 text-right flex-shrink-0">{totalChips>0?((p.stack/totalChips)*100).toFixed(1):'0.0'}%</span>
-                        {players.length>2 && <button onClick={()=>removePlayer(p.id)} className="text-slate-600 hover:text-slate-400 text-lg px-1">×</button>}
-                      </div>
-                    ))}
-                  </div>
-                  <button onClick={addPlayer} className="mt-3 w-full border border-dashed border-surface-600 text-slate-600 hover:text-slate-400 font-mono text-xs py-1.5 rounded-lg transition-colors">+ プレイヤーを追加</button>
-                </>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">残り人数</label>
-                    <input type="number" className="input-base" min={2} step={1} value={simpleNumPlayers}
-                      onChange={e => { setSimpleNumPlayers(Math.max(2, +e.target.value)); setResults(null) }} />
-                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">人</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">平均スタック</label>
-                    <input type="number" className="input-base" min={1} step={500} value={simpleAvgStack}
-                      onChange={e => { setSimpleAvgStack(Math.max(1, +e.target.value)); setResults(null) }} />
-                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">chips</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <label className="font-mono text-xs text-slate-500 w-28 flex-shrink-0">自分のスタック</label>
-                    <input type="number" className="input-base" min={1} step={500} value={simpleHeroStack}
-                      onChange={e => { setSimpleHeroStack(Math.max(1, +e.target.value)); setResults(null) }} />
-                    <span className="font-mono text-xs text-slate-600 flex-shrink-0">chips</span>
-                  </div>
-                  <div className="font-mono text-xs text-slate-600 pt-1">
-                    Hero {simpleHeroStack.toLocaleString()} + Villain×{simpleNumPlayers - 1}人 {simpleAvgStack.toLocaleString()} chips
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {error && <p className="font-mono text-xs text-red-400 px-1">{error}</p>}
-            <button onClick={calculate} className="btn-primary w-full">ICMエクイティを計算</button>
-
-            {results && (
-              <div className="card space-y-1">
-                <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">結果</h2>
-                <div className="grid grid-cols-3 gap-2 mb-4">
-                  {[{label:'参加人数',value:`${players.length}人`},{label:'賞金総額',value:`¥${totalPrize.toLocaleString()}`},{label:'入賞ライン',value:`${prizes.filter(p=>p>0).length}位まで`}].map(m=>(
-                    <div key={m.label} className="bg-surface-800 rounded-lg p-3">
-                      <div className="font-mono text-xs text-slate-500 mb-1">{m.label}</div>
-                      <div className="font-mono text-sm font-semibold text-slate-100">{m.value}</div>
-                    </div>
-                  ))}
-                </div>
-                {results.map(r=>(
-                  <div key={r.player.id} className="py-2 border-b border-surface-600 last:border-0">
-                    <div className="flex items-center gap-3 mb-1.5">
-                      <span className="font-mono text-xs text-slate-600 w-4">{r.rank}</span>
-                      <span className="font-mono text-sm text-slate-100 flex-1">{r.player.name}</span>
+              <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">ICMエクイティ</h2>
+              <div className="space-y-1">
+                {icmResults.map((r, rank) => (
+                  <div key={r.name} className="py-2 border-b border-surface-600 last:border-0">
+                    <div className="flex items-center gap-3 mb-1">
+                      <span className="font-mono text-xs text-slate-600 w-4">{rank + 1}</span>
+                      <span className="font-mono text-sm text-slate-100 flex-1">{r.name}</span>
                       <span className="font-mono text-xs text-slate-500">{r.chipPct.toFixed(1)}%</span>
-                      <span className="font-mono text-sm font-semibold text-gold-400 w-28 text-right">¥{Math.round(r.equity).toLocaleString()}</span>
+                      <span className="font-mono text-sm font-semibold text-gold-400 w-28 text-right">
+                        ¥{Math.round(r.equity).toLocaleString()}
+                      </span>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="w-4" />
                       <div className="flex-1 h-1 bg-surface-600 rounded-full overflow-hidden">
-                        <div className="h-full bg-gold-400 rounded-full transition-all duration-500" style={{width:`${(r.equity/maxEquity)*100}%`}} />
+                        <div className="h-full bg-gold-400 rounded-full"
+                          style={{ width: `${(r.equity / (icmResults[0]?.equity || 1)) * 100}%` }} />
                       </div>
-                      <span className="font-mono text-xs text-slate-600 w-28 text-right">{((r.equity/totalPrize)*100).toFixed(1)}% of prize</span>
+                      <span className="font-mono text-xs text-slate-600 w-28 text-right">
+                        {((r.equity / totalPrize) * 100).toFixed(1)}% of prize
+                      </span>
                     </div>
                   </div>
                 ))}
               </div>
-            )}
-          </>
-        )}
-
-        {tab === 'bubble' && (
-          <>
-            <div className="card">
-              <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">バブルファクター計算</h2>
-              <p className="font-mono text-xs text-slate-500 mb-4">オールインコール時の損失/利得のICM比率。BF {'>'} 1 ほどコールに慎重が必要。</p>
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <label className="font-mono text-xs text-slate-500 w-20">Hero</label>
-                  <select className="input-base" value={heroIdx} onChange={e=>setHeroIdx(+e.target.value)}>
-                    {players.map((p,i)=><option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
-                  </select>
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="font-mono text-xs text-slate-500 w-20">Villain</label>
-                  <select className="input-base" value={villainIdx} onChange={e=>setVillainIdx(+e.target.value)}>
-                    {players.map((p,i)=><option key={p.id} value={i}>{p.name} ({p.stack.toLocaleString()})</option>)}
-                  </select>
-                </div>
-              </div>
-              <button onClick={calcBubble} className="btn-primary w-full mt-4">計算する</button>
             </div>
-            {bubbleResult && (
+
+            {/* バブルファクター表 */}
+            {bfResults && bfResults.length > 0 && (
               <div className="card">
-                <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">結果</h2>
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="bg-surface-800 rounded-lg p-3">
-                    <div className="font-mono text-xs text-slate-500 mb-1">バブルファクター</div>
-                    <div className={`font-mono text-xl font-semibold ${bubbleResult.bf>2?'text-red-400':bubbleResult.bf>1.3?'text-amber-400':'text-green-400'}`}>{bubbleResult.bf.toFixed(2)}</div>
-                  </div>
-                  <div className="bg-surface-800 rounded-lg p-3">
-                    <div className="font-mono text-xs text-slate-500 mb-1">勝ち時の利得</div>
-                    <div className="font-mono text-sm font-semibold text-green-400">+¥{Math.round(bubbleResult.gain).toLocaleString()}</div>
-                  </div>
-                  <div className="bg-surface-800 rounded-lg p-3">
-                    <div className="font-mono text-xs text-slate-500 mb-1">負け時の損失</div>
-                    <div className="font-mono text-sm font-semibold text-red-400">-¥{Math.round(bubbleResult.loss).toLocaleString()}</div>
-                  </div>
+                <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider mb-3">バブルファクター（Hero vs 各Villain）</h2>
+                <div className="space-y-2">
+                  {bfResults.map(r => (
+                    <div key={r.villain} className="flex items-center gap-3 py-1 border-b border-surface-600 last:border-0">
+                      <span className="font-mono text-sm text-slate-100 flex-1">{r.villain}</span>
+                      <span className="font-mono text-xs text-green-400 w-24 text-right">
+                        +¥{Math.round(r.gain).toLocaleString()}
+                      </span>
+                      <span className="font-mono text-xs text-red-400 w-24 text-right">
+                        -¥{Math.round(r.loss).toLocaleString()}
+                      </span>
+                      <span className={`font-mono text-sm font-semibold w-14 text-right ${r.bf > 2 ? 'text-red-400' : r.bf > 1.3 ? 'text-amber-400' : 'text-green-400'}`}>
+                        {isFinite(r.bf) ? r.bf.toFixed(2) : '∞'}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                <div className="mt-3 p-3 bg-surface-800 rounded-lg">
-                  <p className="font-mono text-xs text-slate-400">{bubbleResult.bf>2?'⚠ BF が高い。コールには非常に強いハンドが必要。':bubbleResult.bf>1.3?'注意: チップEVよりも ICM プレッシャーが大きい。':'✓ ICM プレッシャーは比較的低い。チップEVを重視できる。'}</p>
+                <p className="font-mono text-xs text-slate-600 mt-2">BF = ICM損失 / ICM利得。高いほどコール慎重が必要。</p>
+              </div>
+            )}
+
+            {/* Push/Foldハンドグリッド */}
+            {pushResults && (
+              <div className="card">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-mono text-xs text-slate-500 uppercase tracking-wider">Push/Fold — {heroPosition}</h2>
+                  <span className="font-mono text-xs text-green-400">{pushCount} / 169 hands</span>
+                </div>
+                <div className="font-mono text-xs text-slate-500 mb-2">
+                  緑 = Push有利　グレー = フォールド推奨
+                  <span className="ml-2 text-slate-600">
+                    (Villain Top 30% コールレンジ想定)
+                  </span>
+                </div>
+                <HandGrid selected={new Set()} onChange={() => {}} colorMap={pushColorMap} readOnly />
+
+                {/* EV上位ハンド */}
+                <div className="mt-4">
+                  <div className="font-mono text-xs text-slate-500 mb-2">Push EV上位ハンド</div>
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {[...pushResults]
+                      .filter(r => r.shouldPush)
+                      .sort((a, b) => b.pushEV - a.pushEV)
+                      .slice(0, 15)
+                      .map(r => (
+                        <div key={r.hand} className="flex items-center gap-3 py-0.5 border-b border-surface-600 last:border-0">
+                          <span className="font-mono text-xs text-slate-100 w-10">{r.hand}</span>
+                          <span className="font-mono text-xs text-slate-500 w-16">eq {(r.equity * 100).toFixed(1)}%</span>
+                          <div className="flex-1 h-1 bg-surface-600 rounded-full overflow-hidden">
+                            <div className="h-full bg-green-500 rounded-full"
+                              style={{ width: `${Math.min(100, Math.abs(r.pushEV) * 5000)}%` }} />
+                          </div>
+                          <span className="font-mono text-xs w-20 text-right text-green-400">
+                            +{(r.pushEV * 100).toFixed(3)}%
+                          </span>
+                        </div>
+                      ))}
+                  </div>
                 </div>
               </div>
             )}
           </>
         )}
 
-        {tab === 'pushcall' && (
-          <PushCallTab players={players} prizes={prizes} />
-        )}
-
-        <div className="text-center"><p className="font-mono text-xs text-slate-600">Malmuth-Harville ICMモデル · Monte Carlo equity · 9人以下は厳密計算</p></div>
+        <div className="text-center">
+          <p className="font-mono text-xs text-slate-600">Malmuth-Harville ICM · Monte Carlo equity</p>
+        </div>
       </div>
     </div>
   )
