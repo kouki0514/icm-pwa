@@ -17,6 +17,11 @@ const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
   BB:  [],
 }
 
+// heroポジションが必要とする最低テーブル人数（hero含む）
+const MIN_PLAYERS_FOR: Record<PositionLabel, number> = {
+  UTG: 6, HJ: 5, CO: 4, BTN: 3, SB: 2, BB: 2,
+}
+
 function assignPositions(n: number): PositionLabel[] {
   return Array.from({ length: n }, (_, i) => {
     const fromEnd = n - 1 - i
@@ -72,6 +77,59 @@ export default function App() {
   }
   const updateTablePlayer = (id: number, field: 'name' | 'stack', value: string | number) => {
     setTablePlayers(p => p.map(x => x.id === id ? { ...x, [field]: value } : x))
+  }
+
+  // ---- ポジション変更ハンドラ ----
+  const handlePositionChange = (pos: PositionLabel) => {
+    setHeroPosition(pos)
+    setIcmResults(null); setBfResults(null); setPushResults(null)
+
+    setTablePlayers(prev => {
+      const hero = prev.find(p => p.isHero)
+      if (!hero) return prev
+
+      const needed = MIN_PLAYERS_FOR[pos]  // hero含む最低人数
+
+      // heroを先頭に固定し、villain群を再構築
+      // 現在のvillainリスト（hero以外）を保持
+      const existingVillains = prev.filter(p => !p.isHero)
+
+      // 必要Villain数
+      const neededVillains = needed - 1
+
+      let newVillains: TablePlayer[]
+      if (existingVillains.length >= neededVillains) {
+        // 多い場合は末尾から削除（neededVillains人に絞る）
+        newVillains = existingVillains.slice(0, neededVillains)
+      } else {
+        // 少ない場合は不足分を追加
+        const toAdd = neededVillains - existingVillains.length
+        const added = Array.from({ length: toAdd }, (_, i) => ({
+          id: nextId++,
+          name: `Villain ${existingVillains.length + i + 1}`,
+          stack: hero.stack,  // heroスタックをデフォルトに
+          isHero: false,
+        }))
+        newVillains = [...existingVillains, ...added]
+      }
+
+      // heroを先頭に配置し、ポジション順（末尾=SB方向）に並ぶように
+      // heroのポジションインデックス: assignPositions(needed) で pos の位置を探す
+      const labels = assignPositions(needed)
+      const heroPos = labels.indexOf(pos)  // heroが何番目か
+
+      // heroを heroPos 番目に差し込んでリスト再構成
+      const ordered: TablePlayer[] = []
+      let vi = 0
+      for (let i = 0; i < needed; i++) {
+        if (i === heroPos) {
+          ordered.push(hero)
+        } else {
+          ordered.push(newVillains[vi++])
+        }
+      }
+      return ordered
+    })
   }
 
   // 賞金操作
@@ -270,7 +328,7 @@ export default function App() {
             <label className="font-mono text-xs text-slate-500 w-24 flex-shrink-0">Heroポジション</label>
             <div className="flex gap-1 flex-wrap">
               {(['UTG', 'HJ', 'CO', 'BTN', 'SB', 'BB'] as const).map(pos => (
-                <button key={pos} onClick={() => setHeroPosition(pos)}
+                <button key={pos} onClick={() => handlePositionChange(pos)}
                   className={`font-mono text-xs px-2 py-1 rounded border transition-colors ${heroPosition === pos ? 'bg-gold-400 text-surface-900 border-gold-400' : 'border-surface-600 text-slate-400 hover:text-slate-200'}`}>
                   {pos}
                 </button>
