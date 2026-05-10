@@ -191,16 +191,29 @@ export default function App() {
         .filter(({ i }) => i !== heroIdx)
         .map(({ p, i }) => {
           const vStack = stacks[i]
+          const effectiveStack = Math.min(heroStack, vStack)
+
           const winStacks = [...stacks]
-          winStacks[heroIdx] = heroStack + vStack
-          winStacks[i] = 0
+          winStacks[heroIdx] = heroStack + effectiveStack
+          winStacks[i] = vStack - effectiveStack
           const winFiltered = winStacks.filter(s => s > 0)
-          const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
-          // heroのインデックスを再計算（iがheroより前か後かで変わる）
-          const winHeroIdx = heroIdx < i ? heroIdx : heroIdx - 1
+          const winPrizes = validPrizes.slice(0, winFiltered.length)
+          const winICM = calculateICM(winFiltered, winPrizes)
+          const winHeroIdx = winFiltered.indexOf(winStacks[heroIdx])
           const heroWin = winICM[winHeroIdx] ?? 0
+
+          const loseStacks = [...stacks]
+          loseStacks[heroIdx] = heroStack - effectiveStack
+          loseStacks[i] = vStack + effectiveStack
+          const loseFiltered = loseStacks.filter(s => s > 0)
+          const losePrizes = validPrizes.slice(0, loseFiltered.length)
+          const loseICM = calculateICM(loseFiltered, losePrizes)
+          const loseHeroStack = loseStacks[heroIdx]
+          const loseHeroIdx = loseHeroStack > 0 ? loseFiltered.indexOf(loseHeroStack) : -1
+          const heroLose = loseHeroIdx >= 0 ? loseICM[loseHeroIdx] ?? 0 : 0
+
           const gain = heroWin - baseEquity
-          const loss = baseEquity
+          const loss = baseEquity - heroLose
           const bf = gain > 0 ? loss / gain : Infinity
           return { villain: p.name, bf, gain, loss }
         })
