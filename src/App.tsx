@@ -193,24 +193,28 @@ export default function App() {
           const vStack = stacks[i]
           const effectiveStack = Math.min(heroStack, vStack)
 
+          // win: hero gains effectiveStack from villain
           const winStacks = [...stacks]
           winStacks[heroIdx] = heroStack + effectiveStack
           winStacks[i] = vStack - effectiveStack
-          const winFiltered = winStacks.filter(s => s > 0)
-          const winPrizes = validPrizes.slice(0, winFiltered.length)
-          const winICM = calculateICM(winFiltered, winPrizes)
-          const winHeroIdx = winFiltered.indexOf(winStacks[heroIdx])
-          const heroWin = winICM[winHeroIdx] ?? 0
+          // track indices through filter by mapping original index → new index
+          const winIndexMap: number[] = []
+          winStacks.forEach((s, idx) => { if (s > 0) winIndexMap.push(idx) })
+          const winFiltered = winIndexMap.map(idx => winStacks[idx])
+          const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
+          const winHeroPos = winIndexMap.indexOf(heroIdx)
+          const heroWin = winHeroPos >= 0 ? winICM[winHeroPos] ?? 0 : 0
 
+          // lose: hero loses effectiveStack to villain
           const loseStacks = [...stacks]
           loseStacks[heroIdx] = heroStack - effectiveStack
           loseStacks[i] = vStack + effectiveStack
-          const loseFiltered = loseStacks.filter(s => s > 0)
-          const losePrizes = validPrizes.slice(0, loseFiltered.length)
-          const loseICM = calculateICM(loseFiltered, losePrizes)
-          const loseHeroStack = loseStacks[heroIdx]
-          const loseHeroIdx = loseHeroStack > 0 ? loseFiltered.indexOf(loseHeroStack) : -1
-          const heroLose = loseHeroIdx >= 0 ? loseICM[loseHeroIdx] ?? 0 : 0
+          const loseIndexMap: number[] = []
+          loseStacks.forEach((s, idx) => { if (s > 0) loseIndexMap.push(idx) })
+          const loseFiltered = loseIndexMap.map(idx => loseStacks[idx])
+          const loseICM = calculateICM(loseFiltered, validPrizes.slice(0, loseFiltered.length))
+          const loseHeroPos = loseIndexMap.indexOf(heroIdx)
+          const heroLose = loseHeroPos >= 0 ? loseICM[loseHeroPos] ?? 0 : 0
 
           const gain = heroWin - baseEquity
           const loss = baseEquity - heroLose
