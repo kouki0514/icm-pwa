@@ -116,10 +116,14 @@ export async function calcPushEV(
     return idx >= 0 ? eq2[idx] : 0
   }
 
+  const CHUNK_SIZE = 10
   for (let hi = 0; hi < ALL_HANDS.length; hi++) {
-    const h = ALL_HANDS[hi]
-    if (onProgress) onProgress(Math.round((hi / ALL_HANDS.length) * 100))
+    if (hi % CHUNK_SIZE === 0) {
+      if (onProgress) onProgress(Math.round((hi / ALL_HANDS.length) * 100))
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
 
+    const h = ALL_HANDS[hi]
     const [r1, r2] = handKeyToRanks(h)
     const suited = h.endsWith('s')
     const s1 = 0, s2 = suited ? 0 : 1
@@ -130,7 +134,7 @@ export async function calcPushEV(
       const range = villainRanges.get(vIdx) ?? []
       const callFreq = Math.min(combosInRange(range) / 1326, 1)
       const eq = range.length > 0
-        ? monteCarloEquity(r1, r2, s1, s2, range, [], 400)
+        ? monteCarloEquity(r1, r2, s1, s2, range, [])
         : 0.5
       return { vIdx, callFreq, eq, range }
     })

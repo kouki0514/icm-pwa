@@ -75,7 +75,7 @@ export function monteCarloEquity(
   heroR1: number, heroR2: number, heroS1: number, heroS2: number,
   villainRange: string[],
   board: number[] = [],
-  boardSamples = 200
+  boardSamples = 30
 ): number {
   const h1 = cardIndex(heroR1, heroS1)
   const h2 = cardIndex(heroR2, heroS2)
@@ -118,12 +118,15 @@ export function monteCarloEquity(
     const boardSet = new Set(boardSample)
 
     // Filter villain combos that don't collide with this board sample
-    const validCombos = allVillainCombos.filter(([c1, c2]) => !boardSet.has(c1) && !boardSet.has(c2))
+    let validCombos = allVillainCombos.filter(([c1, c2]) => !boardSet.has(c1) && !boardSet.has(c2))
     if (validCombos.length === 0) continue
+    if (validCombos.length > 100) {
+      validCombos = validCombos.sort(() => Math.random() - 0.5).slice(0, 50)
+    }
 
     const heroScore = handRank([h1, h2, ...boardSample])
 
-    // Weighted average equity over all valid villain combos for this board
+    // Weighted average equity over valid villain combos for this board
     let wins = 0
     for (const [vc1, vc2] of validCombos) {
       const villScore = handRank([vc1, vc2, ...boardSample])
