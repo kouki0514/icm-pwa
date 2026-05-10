@@ -192,7 +192,7 @@ export default function App() {
       const bfList = tablePlayers
         .map((p, i) => ({ p, i }))
         .filter(({ i }) => i !== heroIdxLocal)
-        .map(({ p, i }, mapIdx) => {
+        .map(({ p, i }) => {
           const vStack = stacks[i]
           const effectiveStack = Math.min(heroStack, vStack)
 
@@ -221,16 +221,6 @@ export default function App() {
           const gain = heroWin - baseEquity
           const loss = baseEquity - heroLose
           const bf = gain > 0 ? loss / gain : Infinity
-
-          if (mapIdx === 0) {
-            console.log('[BF debug] villain:', p.name)
-            console.log('[BF debug] heroIdxLocal:', heroIdxLocal, 'villainIdx:', i)
-            console.log('[BF debug] heroStack:', heroStack, 'vStack:', vStack, 'effectiveStack:', effectiveStack)
-            console.log('[BF debug] baseEquity:', baseEquity, 'heroWin:', heroWin, 'heroLose:', heroLose)
-            console.log('[BF debug] gain:', gain, 'loss:', loss, 'bf:', bf)
-            console.log('[BF debug] winIndexMap:', winIndexMap, 'winHeroPos:', winHeroPos)
-            console.log('[BF debug] loseIndexMap:', loseIndexMap, 'loseHeroPos:', loseHeroPos)
-          }
 
           return { villain: p.name, bf, gain, loss }
         })
@@ -480,7 +470,7 @@ export default function App() {
                       <span className="font-mono text-xs text-red-400 w-24 text-right">
                         -¥{Math.round(r.loss).toLocaleString()}
                       </span>
-                      <span className={`font-mono text-sm font-semibold w-14 text-right ${r.bf > 2 ? 'text-red-400' : r.bf > 1.3 ? 'text-amber-400' : 'text-green-400'}`}>
+                      <span className={`font-mono text-sm font-semibold w-14 text-right ${r.bf > 1.5 ? 'text-red-400' : r.bf > 1.05 ? 'text-amber-400' : r.bf >= 0.95 ? 'text-slate-400' : 'text-green-400'}`}>
                         {isFinite(r.bf) ? r.bf.toFixed(2) : '∞'}
                       </span>
                     </div>
