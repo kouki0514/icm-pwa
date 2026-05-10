@@ -75,7 +75,7 @@ export function monteCarloEquity(
   heroR1: number, heroR2: number, heroS1: number, heroS2: number,
   villainRange: string[],
   board: number[] = [],
-  boardSamples = 30
+  boardSamples = 100
 ): number {
   const h1 = cardIndex(heroR1, heroS1)
   const h2 = cardIndex(heroR2, heroS2)

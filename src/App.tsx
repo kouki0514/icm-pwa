@@ -5,17 +5,26 @@ import HandGrid from './components/HandGrid'
 
 // ---- 型定義 ----
 interface TablePlayer { id: number; name: string; stack: number; isHero: boolean }
-type PositionLabel = 'UTG' | 'UTG+1' | 'UTG+2' | 'UTG+3' | 'LJ' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
+type PositionLabel = 'UTG' | 'UTG+1' | 'UTG+2' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
 
-// 末尾からのシート順（少人数でも後ろから正しくアサイン）
-const SEAT_ORDER_BASE: PositionLabel[] = ['SB', 'BB', 'BTN', 'CO', 'HJ', 'LJ', 'UTG+3', 'UTG+2', 'UTG+1', 'UTG']
+// 人数別ポジション配列（アクション順：UTG→...→BTN→SB→BB）
+const POSITIONS_BY_COUNT: PositionLabel[][] = [
+  [],                                                            // 0
+  [],                                                            // 1
+  ['SB', 'BB'],                                                  // 2
+  ['BTN', 'SB', 'BB'],                                           // 3
+  ['CO', 'BTN', 'SB', 'BB'],                                     // 4
+  ['HJ', 'CO', 'BTN', 'SB', 'BB'],                              // 5
+  ['UTG', 'HJ', 'CO', 'BTN', 'SB', 'BB'],                      // 6
+  ['UTG', 'UTG+1', 'HJ', 'CO', 'BTN', 'SB', 'BB'],             // 7
+  ['UTG', 'UTG+1', 'UTG+2', 'HJ', 'CO', 'BTN', 'SB', 'BB'],   // 8
+  ['UTG', 'UTG+1', 'UTG+2', 'UTG+2', 'HJ', 'CO', 'BTN', 'SB', 'BB'], // 9 (UTG+2重複で代用)
+]
 
 const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
-  UTG:    ['UTG+1', 'UTG+2', 'UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
-  'UTG+1':['UTG+2', 'UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
-  'UTG+2':['UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
-  'UTG+3':['LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
-  LJ:     ['HJ', 'CO', 'BTN', 'SB', 'BB'],
+  UTG:    ['UTG+1', 'UTG+2', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  'UTG+1':['UTG+2', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  'UTG+2':['HJ', 'CO', 'BTN', 'SB', 'BB'],
   HJ:     ['CO', 'BTN', 'SB', 'BB'],
   CO:     ['BTN', 'SB', 'BB'],
   BTN:    ['SB', 'BB'],
@@ -25,14 +34,12 @@ const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
 
 // heroポジションが必要とする最低テーブル人数（hero含む）
 const MIN_PLAYERS_FOR: Record<PositionLabel, number> = {
-  UTG: 10, 'UTG+1': 9, 'UTG+2': 8, 'UTG+3': 7, LJ: 6, HJ: 5, CO: 4, BTN: 3, SB: 2, BB: 2,
+  UTG: 6, 'UTG+1': 7, 'UTG+2': 8, HJ: 5, CO: 4, BTN: 3, SB: 2, BB: 2,
 }
 
 function assignPositions(n: number): PositionLabel[] {
-  return Array.from({ length: n }, (_, i) => {
-    const fromEnd = n - 1 - i
-    return SEAT_ORDER_BASE[fromEnd] ?? 'UTG'
-  })
+  const clamped = Math.min(Math.max(n, 2), 9)
+  return POSITIONS_BY_COUNT[clamped] ?? POSITIONS_BY_COUNT[9]
 }
 
 // ---- デフォルト値 ----
@@ -193,34 +200,38 @@ export default function App() {
       )
 
       // ---- バブルファクター計算 ----
-      const heroStack = stacks[heroIdxLocal]
-      const baseEquity = icmEquity[heroIdxLocal]
+      // テーブル内プレイヤーのみで計算（n>9で線形近似になりBF=1になるのを防ぐ）
+      const tableStacks = tablePlayers.map(p => p.stack)
+      const tablePrizes = validPrizes.slice(0, tableStacks.length)
+      const tableICM = calculateICM(tableStacks, tablePrizes)
+      const heroStack = tableStacks[heroIdxLocal]
+      const baseEquity = tableICM[heroIdxLocal]
       const bfList = tablePlayers
         .map((p, i) => ({ p, i }))
         .filter(({ i }) => i !== heroIdxLocal)
         .map(({ p, i }) => {
-          const vStack = stacks[i]
+          const vStack = tableStacks[i]
           const effectiveStack = Math.min(heroStack, vStack)
 
           // win: hero gains effectiveStack from villain
-          const winStacks = [...stacks]
+          const winStacks = [...tableStacks]
           winStacks[heroIdxLocal] = heroStack + effectiveStack
           winStacks[i] = vStack - effectiveStack
           const winIndexMap: number[] = []
           winStacks.forEach((s, idx) => { if (s > 0) winIndexMap.push(idx) })
           const winFiltered = winIndexMap.map(idx => winStacks[idx])
-          const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
+          const winICM = calculateICM(winFiltered, tablePrizes.slice(0, winFiltered.length))
           const winHeroPos = winIndexMap.findIndex(idx => idx === heroIdxLocal)
           const heroWin = winHeroPos >= 0 ? winICM[winHeroPos] ?? 0 : 0
 
           // lose: hero loses effectiveStack to villain
-          const loseStacks = [...stacks]
+          const loseStacks = [...tableStacks]
           loseStacks[heroIdxLocal] = heroStack - effectiveStack
           loseStacks[i] = vStack + effectiveStack
           const loseIndexMap: number[] = []
           loseStacks.forEach((s, idx) => { if (s > 0) loseIndexMap.push(idx) })
           const loseFiltered = loseIndexMap.map(idx => loseStacks[idx])
-          const loseICM = calculateICM(loseFiltered, validPrizes.slice(0, loseFiltered.length))
+          const loseICM = calculateICM(loseFiltered, tablePrizes.slice(0, loseFiltered.length))
           const loseHeroPos = loseIndexMap.findIndex(idx => idx === heroIdxLocal)
           const heroLose = loseHeroPos >= 0 ? loseICM[loseHeroPos] ?? 0 : 0
 
