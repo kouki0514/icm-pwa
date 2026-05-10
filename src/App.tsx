@@ -5,27 +5,33 @@ import HandGrid from './components/HandGrid'
 
 // ---- 型定義 ----
 interface TablePlayer { id: number; name: string; stack: number; isHero: boolean }
-type PositionLabel = 'UTG' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
+type PositionLabel = 'UTG' | 'UTG+1' | 'UTG+2' | 'UTG+3' | 'LJ' | 'HJ' | 'CO' | 'BTN' | 'SB' | 'BB'
 
-const SEAT_ORDER: PositionLabel[] = ['SB', 'BB', 'BTN', 'CO', 'HJ', 'UTG']
+// 末尾からのシート順（少人数でも後ろから正しくアサイン）
+const SEAT_ORDER_BASE: PositionLabel[] = ['SB', 'BB', 'BTN', 'CO', 'HJ', 'LJ', 'UTG+3', 'UTG+2', 'UTG+1', 'UTG']
+
 const CALLERS_FROM: Record<PositionLabel, PositionLabel[]> = {
-  UTG: ['HJ', 'CO', 'BTN', 'SB', 'BB'],
-  HJ:  ['CO', 'BTN', 'SB', 'BB'],
-  CO:  ['BTN', 'SB', 'BB'],
-  BTN: ['SB', 'BB'],
-  SB:  ['BB'],
-  BB:  [],
+  UTG:    ['UTG+1', 'UTG+2', 'UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  'UTG+1':['UTG+2', 'UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  'UTG+2':['UTG+3', 'LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  'UTG+3':['LJ', 'HJ', 'CO', 'BTN', 'SB', 'BB'],
+  LJ:     ['HJ', 'CO', 'BTN', 'SB', 'BB'],
+  HJ:     ['CO', 'BTN', 'SB', 'BB'],
+  CO:     ['BTN', 'SB', 'BB'],
+  BTN:    ['SB', 'BB'],
+  SB:     ['BB'],
+  BB:     [],
 }
 
 // heroポジションが必要とする最低テーブル人数（hero含む）
 const MIN_PLAYERS_FOR: Record<PositionLabel, number> = {
-  UTG: 6, HJ: 5, CO: 4, BTN: 3, SB: 2, BB: 2,
+  UTG: 10, 'UTG+1': 9, 'UTG+2': 8, 'UTG+3': 7, LJ: 6, HJ: 5, CO: 4, BTN: 3, SB: 2, BB: 2,
 }
 
 function assignPositions(n: number): PositionLabel[] {
   return Array.from({ length: n }, (_, i) => {
     const fromEnd = n - 1 - i
-    return SEAT_ORDER[fromEnd] ?? 'UTG'
+    return SEAT_ORDER_BASE[fromEnd] ?? 'UTG'
   })
 }
 
@@ -230,7 +236,7 @@ export default function App() {
       const callerPositions = CALLERS_FROM[heroPosition]
       const villainIndices = positionLabels
         .map((pos, i) => ({ pos, i }))
-        .filter(({ pos, i }) => callerPositions.includes(pos) && i !== heroIdx)
+        .filter(({ pos, i }) => callerPositions.includes(pos) && i !== heroIdxLocal)
         .map(({ i }) => i)
 
       const villainRanges = new Map<number, string[]>()
@@ -245,9 +251,15 @@ export default function App() {
         numPlayers: tableCount, heroPosition: heroPos,
       }
 
-      const pushTargetIndices = villainIndices.length > 0 ? villainIndices : [tablePlayers.findIndex((_, i) => i !== heroIdx)]
+      // villainIndicesが空（BBポジション等）の場合はSBをデフォルトcallerとして使用
+      const firstOtherIdx = tablePlayers.findIndex((_, i) => i !== heroIdxLocal)
+      const pushTargetIndices = villainIndices.length > 0 ? villainIndices : (firstOtherIdx >= 0 ? [firstOtherIdx] : [])
+      if (pushTargetIndices.length === 0) {
+        setPushResults([])
+        return
+      }
       const res = await calcPushEV(
-        heroIdx, pushTargetIndices, stacks, validPrizes, villainRanges, potInfo,
+        heroIdxLocal, pushTargetIndices, stacks, validPrizes, villainRanges, potInfo,
         (pct) => setProgress(pct)
       )
       setPushResults(res)
