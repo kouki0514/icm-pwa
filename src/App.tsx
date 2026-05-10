@@ -189,7 +189,7 @@ export default function App() {
       const bfList = tablePlayers
         .map((p, i) => ({ p, i }))
         .filter(({ i }) => i !== heroIdx)
-        .map(({ p, i }) => {
+        .map(({ p, i }, mapIdx) => {
           const vStack = stacks[i]
           const effectiveStack = Math.min(heroStack, vStack)
 
@@ -197,12 +197,11 @@ export default function App() {
           const winStacks = [...stacks]
           winStacks[heroIdx] = heroStack + effectiveStack
           winStacks[i] = vStack - effectiveStack
-          // track indices through filter by mapping original index → new index
           const winIndexMap: number[] = []
           winStacks.forEach((s, idx) => { if (s > 0) winIndexMap.push(idx) })
           const winFiltered = winIndexMap.map(idx => winStacks[idx])
           const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
-          const winHeroPos = winIndexMap.indexOf(heroIdx)
+          const winHeroPos = winIndexMap.findIndex(idx => idx === heroIdx)
           const heroWin = winHeroPos >= 0 ? winICM[winHeroPos] ?? 0 : 0
 
           // lose: hero loses effectiveStack to villain
@@ -213,12 +212,23 @@ export default function App() {
           loseStacks.forEach((s, idx) => { if (s > 0) loseIndexMap.push(idx) })
           const loseFiltered = loseIndexMap.map(idx => loseStacks[idx])
           const loseICM = calculateICM(loseFiltered, validPrizes.slice(0, loseFiltered.length))
-          const loseHeroPos = loseIndexMap.indexOf(heroIdx)
+          const loseHeroPos = loseIndexMap.findIndex(idx => idx === heroIdx)
           const heroLose = loseHeroPos >= 0 ? loseICM[loseHeroPos] ?? 0 : 0
 
           const gain = heroWin - baseEquity
           const loss = baseEquity - heroLose
           const bf = gain > 0 ? loss / gain : Infinity
+
+          if (mapIdx === 0) {
+            console.log('[BF debug] villain:', p.name)
+            console.log('[BF debug] heroIdx:', heroIdx, 'villainIdx:', i)
+            console.log('[BF debug] heroStack:', heroStack, 'vStack:', vStack, 'effectiveStack:', effectiveStack)
+            console.log('[BF debug] baseEquity:', baseEquity, 'heroWin:', heroWin, 'heroLose:', heroLose)
+            console.log('[BF debug] gain:', gain, 'loss:', loss, 'bf:', bf)
+            console.log('[BF debug] winIndexMap:', winIndexMap, 'winHeroPos:', winHeroPos)
+            console.log('[BF debug] loseIndexMap:', loseIndexMap, 'loseHeroPos:', loseHeroPos)
+          }
+
           return { villain: p.name, bf, gain, loss }
         })
       setBfResults(bfList)
