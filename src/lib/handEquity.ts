@@ -75,58 +75,63 @@ export function monteCarloEquity(
   heroR1: number, heroR2: number, heroS1: number, heroS2: number,
   villainRange: string[],
   board: number[] = [],
-  iterations = 1000
+  boardSamples = 200
 ): number {
-  const deck = buildDeck().filter(c =>
-    c !== cardIndex(heroR1,heroS1) && c !== cardIndex(heroR2,heroS2) && !board.includes(c)
-  )
+  const h1 = cardIndex(heroR1, heroS1)
+  const h2 = cardIndex(heroR2, heroS2)
+  const heroCards = new Set([h1, h2, ...board])
 
-  // Build villain combos from range
-  const villainCombos: [number,number,number,number][] = []
+  // Enumerate all valid villain combos (excluding hero cards; board overlap handled per sample)
+  const allVillainCombos: [number, number][] = []
   for (const key of villainRange) {
-    const [r1,r2] = handKeyToRanks(key)
+    const [r1, r2] = handKeyToRanks(key)
     const suited = key.endsWith('s')
     const pair = key.length === 2 && key[0] === key[1]
     if (pair) {
-      for (let s1=0;s1<4;s1++) for (let s2=s1+1;s2<4;s2++) {
-        const c1=cardIndex(r1,s1),c2=cardIndex(r2,s2)
-        if (c1!==cardIndex(heroR1,heroS1)&&c1!==cardIndex(heroR2,heroS2)&&
-            c2!==cardIndex(heroR1,heroS1)&&c2!==cardIndex(heroR2,heroS2))
-          villainCombos.push([r1,s1,r2,s2])
+      for (let s1 = 0; s1 < 4; s1++) for (let s2 = s1 + 1; s2 < 4; s2++) {
+        const c1 = cardIndex(r1, s1), c2 = cardIndex(r2, s2)
+        if (!heroCards.has(c1) && !heroCards.has(c2)) allVillainCombos.push([c1, c2])
       }
     } else if (suited) {
-      for (let s=0;s<4;s++) {
-        const c1=cardIndex(r1,s),c2=cardIndex(r2,s)
-        if (c1!==cardIndex(heroR1,heroS1)&&c1!==cardIndex(heroR2,heroS2)&&
-            c2!==cardIndex(heroR1,heroS1)&&c2!==cardIndex(heroR2,heroS2))
-          villainCombos.push([r1,s,r2,s])
+      for (let s = 0; s < 4; s++) {
+        const c1 = cardIndex(r1, s), c2 = cardIndex(r2, s)
+        if (!heroCards.has(c1) && !heroCards.has(c2)) allVillainCombos.push([c1, c2])
       }
     } else {
-      for (let s1=0;s1<4;s1++) for (let s2=0;s2<4;s2++) { if (s1===s2) continue
-        const c1=cardIndex(r1,s1),c2=cardIndex(r2,s2)
-        if (c1!==cardIndex(heroR1,heroS1)&&c1!==cardIndex(heroR2,heroS2)&&
-            c2!==cardIndex(heroR1,heroS1)&&c2!==cardIndex(heroR2,heroS2))
-          villainCombos.push([r1,s1,r2,s2])
+      for (let s1 = 0; s1 < 4; s1++) for (let s2 = 0; s2 < 4; s2++) {
+        if (s1 === s2) continue
+        const c1 = cardIndex(r1, s1), c2 = cardIndex(r2, s2)
+        if (!heroCards.has(c1) && !heroCards.has(c2)) allVillainCombos.push([c1, c2])
       }
     }
   }
-  if (villainCombos.length === 0) return 0.5
+  if (allVillainCombos.length === 0) return 0.5
 
-  let wins = 0, total = 0
-  for (let i = 0; i < iterations; i++) {
-    const vc = villainCombos[Math.floor(Math.random()*villainCombos.length)]
-    const [vr1,vs1,vr2,vs2] = vc
-    const vc1 = cardIndex(vr1,vs1), vc2 = cardIndex(vr2,vs2)
-    const avail = deck.filter(c => c!==vc1 && c!==vc2)
-    const needed = 5 - board.length
-    const shuffled = avail.sort(()=>Math.random()-0.5).slice(0,needed)
-    const community = [...board, ...shuffled]
-    const h1 = cardIndex(heroR1,heroS1), h2 = cardIndex(heroR2,heroS2)
-    const heroScore = handRank([h1,h2,...community])
-    const villScore = handRank([vc1,vc2,...community])
-    if (heroScore > villScore) wins += 1
-    else if (heroScore === villScore) wins += 0.5
-    total++
+  const deckBase = buildDeck().filter(c => !heroCards.has(c))
+  const needed = 5 - board.length
+
+  let totalEV = 0
+  for (let i = 0; i < boardSamples; i++) {
+    // Sample a random board
+    const shuffled = deckBase.slice().sort(() => Math.random() - 0.5)
+    const boardSample = [...board, ...shuffled.slice(0, needed)]
+    const boardSet = new Set(boardSample)
+
+    // Filter villain combos that don't collide with this board sample
+    const validCombos = allVillainCombos.filter(([c1, c2]) => !boardSet.has(c1) && !boardSet.has(c2))
+    if (validCombos.length === 0) continue
+
+    const heroScore = handRank([h1, h2, ...boardSample])
+
+    // Weighted average equity over all valid villain combos for this board
+    let wins = 0
+    for (const [vc1, vc2] of validCombos) {
+      const villScore = handRank([vc1, vc2, ...boardSample])
+      if (heroScore > villScore) wins += 1
+      else if (heroScore === villScore) wins += 0.5
+    }
+    totalEV += wins / validCombos.length
   }
-  return total > 0 ? wins/total : 0.5
+
+  return totalEV / boardSamples
 }
