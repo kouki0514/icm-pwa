@@ -170,6 +170,9 @@ export default function App() {
     try {
       const allPlayers = buildAllPlayers()
       const stacks = allPlayers.map(p => p.stack)
+      // calculate内でheroIdxを再確定（クロージャの古い値を避ける）
+      const heroIdxLocal = tablePlayers.findIndex(p => p.isHero)
+      if (heroIdxLocal < 0) { setError('Heroが設定されていません'); setComputing(false); return }
 
       // ---- ICM計算 ----
       const icmEquity = calculateICM(stacks, validPrizes)
@@ -184,35 +187,35 @@ export default function App() {
       )
 
       // ---- バブルファクター計算 ----
-      const heroStack = stacks[heroIdx]
-      const baseEquity = icmEquity[heroIdx]
+      const heroStack = stacks[heroIdxLocal]
+      const baseEquity = icmEquity[heroIdxLocal]
       const bfList = tablePlayers
         .map((p, i) => ({ p, i }))
-        .filter(({ i }) => i !== heroIdx)
+        .filter(({ i }) => i !== heroIdxLocal)
         .map(({ p, i }, mapIdx) => {
           const vStack = stacks[i]
           const effectiveStack = Math.min(heroStack, vStack)
 
           // win: hero gains effectiveStack from villain
           const winStacks = [...stacks]
-          winStacks[heroIdx] = heroStack + effectiveStack
+          winStacks[heroIdxLocal] = heroStack + effectiveStack
           winStacks[i] = vStack - effectiveStack
           const winIndexMap: number[] = []
           winStacks.forEach((s, idx) => { if (s > 0) winIndexMap.push(idx) })
           const winFiltered = winIndexMap.map(idx => winStacks[idx])
           const winICM = calculateICM(winFiltered, validPrizes.slice(0, winFiltered.length))
-          const winHeroPos = winIndexMap.findIndex(idx => idx === heroIdx)
+          const winHeroPos = winIndexMap.findIndex(idx => idx === heroIdxLocal)
           const heroWin = winHeroPos >= 0 ? winICM[winHeroPos] ?? 0 : 0
 
           // lose: hero loses effectiveStack to villain
           const loseStacks = [...stacks]
-          loseStacks[heroIdx] = heroStack - effectiveStack
+          loseStacks[heroIdxLocal] = heroStack - effectiveStack
           loseStacks[i] = vStack + effectiveStack
           const loseIndexMap: number[] = []
           loseStacks.forEach((s, idx) => { if (s > 0) loseIndexMap.push(idx) })
           const loseFiltered = loseIndexMap.map(idx => loseStacks[idx])
           const loseICM = calculateICM(loseFiltered, validPrizes.slice(0, loseFiltered.length))
-          const loseHeroPos = loseIndexMap.findIndex(idx => idx === heroIdx)
+          const loseHeroPos = loseIndexMap.findIndex(idx => idx === heroIdxLocal)
           const heroLose = loseHeroPos >= 0 ? loseICM[loseHeroPos] ?? 0 : 0
 
           const gain = heroWin - baseEquity
@@ -221,7 +224,7 @@ export default function App() {
 
           if (mapIdx === 0) {
             console.log('[BF debug] villain:', p.name)
-            console.log('[BF debug] heroIdx:', heroIdx, 'villainIdx:', i)
+            console.log('[BF debug] heroIdxLocal:', heroIdxLocal, 'villainIdx:', i)
             console.log('[BF debug] heroStack:', heroStack, 'vStack:', vStack, 'effectiveStack:', effectiveStack)
             console.log('[BF debug] baseEquity:', baseEquity, 'heroWin:', heroWin, 'heroLose:', heroLose)
             console.log('[BF debug] gain:', gain, 'loss:', loss, 'bf:', bf)
