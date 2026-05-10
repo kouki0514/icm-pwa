@@ -138,19 +138,14 @@ export async function calcPushEV(
     // 全員フォールドEV: heroStack + foldGain（ポットを獲得）
     const foldStacksPush = [...stacks]
     foldStacksPush[heroIdx] = heroStack + foldGain
-    // フォールドしたVillainのスタックは変化なし（アンティは既にポットへ）
     const evAllFold = getHeroICM(foldStacksPush)
 
-    // Push EV = 全員フォールド確率 * evAllFold
-    //         + Σ(各Villainがコールし他は全員フォールド) * (そのVillainとの1対1EV)
-    // 簡略化: 独立コール判断（各自独立）→ 誰かがコールするシナリオを列挙
     // 全員フォールド確率
     const allFoldProb = villainData.reduce((p, { callFreq }) => p * (1 - callFreq), 1)
 
-    let evPush = allFoldProb * evAllFold
-
-    // 各Villainがコールする場合（他は全員フォールド、独立仮定）
-    for (const { vIdx, callFreq, eq } of villainData) {
+    // 各Villainがコールする場合のEVと確率を計算
+    // thisCallProb = 「このVillainがコール × 他全員がフォールド」
+    const callScenarios = villainData.map(({ vIdx, callFreq, eq }) => {
       const otherFoldProb = villainData
         .filter(v => v.vIdx !== vIdx)
         .reduce((p, v) => p * (1 - v.callFreq), 1)
@@ -158,27 +153,35 @@ export async function calcPushEV(
 
       const vStack = stacks[vIdx]
       const effectiveStack = Math.min(heroStack, vStack)
+      const sidePot = totalPot
 
-      // オールイン時のポット: effective * 2 + 残りのブラインド・アンティ
-      // ブラインド・アンティはすでにスタックから差し引かれてポットに入っている想定
-      const sidePot = totalPot  // sb + bb + ante * numPlayers
-
-      // caller wins: heroがeffectiveStack分とサイドポットを獲得
       const winStacksPush = [...stacks]
       winStacksPush[heroIdx] = heroStack + effectiveStack + sidePot
       winStacksPush[vIdx] = Math.max(0, vStack - effectiveStack)
       const evWinPush = getHeroICM(winStacksPush)
 
-      // caller loses: villainがeffectiveStack分とサイドポットを獲得
       const loseStacksPush = [...stacks]
       loseStacksPush[heroIdx] = Math.max(0, heroStack - effectiveStack)
       loseStacksPush[vIdx] = vStack + effectiveStack + sidePot
       const evLosePush = getHeroICM(loseStacksPush)
 
-      evPush += thisCallProb * (eq * evWinPush + (1 - eq) * evLosePush)
-    }
+      const scenarioEV = eq * evWinPush + (1 - eq) * evLosePush
+      return { thisCallProb, scenarioEV }
+    })
 
-    // 複数同時コールは無視（独立仮定の残余確率はここでは省略）
+    // 確率の総和（allFoldProb + ΣthisCallProb）は複数同時コールシナリオを無視しているため < 1 になりうる
+    // 残余確率（複数同時コール）は最もEVが低いcallシナリオのEVで近似し、正規化して加重平均する
+    const totalAccountedProb = allFoldProb + callScenarios.reduce((s, c) => s + c.thisCallProb, 0)
+    const worstCallEV = callScenarios.length > 0
+      ? Math.min(...callScenarios.map(c => c.scenarioEV))
+      : evAllFold
+    const residualProb = Math.max(0, 1 - totalAccountedProb)
+
+    let evPush = allFoldProb * evAllFold
+    for (const { thisCallProb, scenarioEV } of callScenarios) {
+      evPush += thisCallProb * scenarioEV
+    }
+    evPush += residualProb * worstCallEV
 
     const pushEV = (evPush - baseEquity) / totalPrize
 
